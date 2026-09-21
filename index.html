@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Q.11 2.0 · Estadísticas de No Conformidades · Silver Industrial</title>
+<link rel="icon" href="data:,">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const API_BASE = "https://nc-silver-api.diegortizdao.workers.dev/api";
+const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+const COLORES_TIPO = {
+  "Defectos x Control de Calidad": "#0f6e56",
+  "Reclamos de Clientes": "#993c1d",
+  "Registro Incompleto": "#5f5e5a",
+  "Identificación de Bultos": "#185fa5",
+  "Otros": "#854f0b",
+  "Proveedores": "#72243e",
+  "Material provisto por Cliente": "#3c3489",
+  "Hallazgo de auditoría": "#3b6d11",
+  "No conformidad": "#0f6e56",
+  "Op. de mejora": "#185fa5",
+};
+
+function parseFechaParts(fecha) {
+  if (!fecha) return { anio: null, mes: null };
+  const [y, m] = String(fecha).split("-");
+  return { anio: Number(y), mes: Number(m) };
+}
+
+function mapNC(row) {
+  const { anio, mes } = parseFechaParts(row.fecha_produccion);
+  return {
+    numero: row.numero,
+    numeroMostrado: row.numero_original || row.numero,
+    tipoCategoria: row.tipo_nc_historico || row.tipo || "Sin clasificar",
+    fecha: row.fecha_produccion,
+    anio,
+    mes,
+    operario: row.operario || "",
+    maquina: row.maquina || "",
+    producto: row.producto || "",
+    cliente: row.cliente || "",
+    devolucion: row.con_devolucion ? "SI" : "NO",
+    estado: row.estado || "",
+  };
+}
+
+function Chip({ label, active, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+        active ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300 hover:border-slate-400"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function MetricCard({ label, value, sub }) {
+  return (
+    <div className="bg-slate-50 rounded-lg p-4">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="text-2xl font-semibold text-slate-800 mt-1">{value}</p>
+      {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
+    </div>
+  );
+}
+
+function BarChart({ data, maxLabel = 10 }) {
+  const max = Math.max(...data.map((d) => d.value), 1);
+  return (
+    <div className="space-y-2">
+      {data.slice(0, maxLabel).map((d) => (
+        <div key={d.label} className="flex items-center gap-2">
+          <span className="text-xs text-slate-600 w-40 truncate" title={d.label}>{d.label}</span>
+          <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden">
+            <div className="h-4 rounded" style={{ width: `${(d.value / max) * 100}%`, background: d.color || "#334155" }} />
+          </div>
+          <span className="text-xs font-medium text-slate-700 w-8 text-right">{d.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MonthlyTrend({ data }) {
+  const max = Math.max(...data.map((d) => d.value), 1);
+  return (
+    <div className="flex items-end gap-1 h-32">
+      {data.map((d) => (
+        <div key={d.label} className="flex-1 flex flex-col items-center gap-1">
+          <div className="w-full bg-slate-700 rounded-t" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value > 0 ? "2px" : "0" }} title={`${d.label}: ${d.value}`} />
+          <span className="text-[10px] text-slate-400">{d.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function exportarExcel(filas, nombreHoja, nombreArchivo) {
+  const ws = XLSX.utils.json_to_sheet(filas);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, nombreHoja);
+  XLSX.writeFile(wb, nombreArchivo);
+}
+
+function VistaGeneral({ registros }) {
+  const anios = useMemo(() => [...new Set(registros.map((r) => r.anio).filter(Boolean))].sort((a, b) => b - a), [registros]);
+  const tipos = useMemo(() => [...new Set(registros.map((r) => r.tipoCategoria))].sort(), [registros]);
+  const maquinas = useMemo(() => [...new Set(registros.map((r) => r.maquina).filter(Boolean))].sort((a, b) => Number(a) - Number(b) || 0), [registros]);
+  const operarios = useMemo(() => [...new Set(registros.map((r) => r.operario).filter(Boolean))].sort(), [registros]);
+
+  const [anioSel, setAnioSel] = useState(null);
+  const [tipoSel, setTipoSel] = useState([]);
+  const [maquinaSel, setMaquinaSel] = useState(null);
+  const [operarioSel, setOperarioSel] = useState(null);
+  const [soloDevolucion, setSoloDevolucion] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
+
+  function toggleTipo(t) {
+    setTipoSel((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+  }
+
+  const filtrados = useMemo(() => {
+    return registros.filter((r) => {
+      if (anioSel && r.anio !== anioSel) return false;
+      if (tipoSel.length > 0 && !tipoSel.includes(r.tipoCategoria)) return false;
+      if (maquinaSel && r.maquina !== maquinaSel) return false;
+      if (operarioSel && r.operario !== operarioSel) return false;
+      if (soloDevolucion && r.devolucion !== "SI") return false;
+      if (busqueda) {
+        const q = busqueda.toLowerCase();
+        const campo = `${r.numeroMostrado} ${r.producto} ${r.cliente} ${r.operario}`.toLowerCase();
+        if (!campo.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [registros, anioSel, tipoSel, maquinaSel, operarioSel, soloDevolucion, busqueda]);
+
+  const porTipo = useMemo(() => {
+    const counts = {};
+    filtrados.forEach((r) => { counts[r.tipoCategoria] = (counts[r.tipoCategoria] || 0) + 1; });
+    return Object.entries(counts).map(([label, value]) => ({ label, value, color: COLORES_TIPO[label] || "#334155" })).sort((a, b) => b.value - a.value);
+  }, [filtrados]);
+
+  const porMes = useMemo(() => {
+    const counts = Array(12).fill(0);
+    filtrados.forEach((r) => { if (r.mes) counts[r.mes - 1] += 1; });
+    return counts.map((value, i) => ({ label: MESES[i], value }));
+  }, [filtrados]);
+
+  const porCliente = useMemo(() => {
+    const counts = {};
+    filtrados.forEach((r) => { if (r.cliente) counts[r.cliente] = (counts[r.cliente] || 0) + 1; });
+    return Object.entries(counts).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [filtrados]);
+
+  const porMaquina = useMemo(() => {
+    const counts = {};
+    filtrados.forEach((r) => { if (r.maquina) counts[`Máq. ${r.maquina}`] = (counts[`Máq. ${r.maquina}`] || 0) + 1; });
+    return Object.entries(counts).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [filtrados]);
+
+  const totalDevoluciones = filtrados.filter((r) => r.devolucion === "SI").length;
+  const pctDevolucion = filtrados.length ? Math.round((totalDevoluciones / filtrados.length) * 100) : 0;
+  const tipoMasFrecuente = porTipo[0]?.label || "—";
+  const hayFiltros = anioSel || tipoSel.length > 0 || maquinaSel || operarioSel || soloDevolucion || busqueda;
+
+  return (
+    <div>
+      <div className="bg-white rounded-lg border border-slate-200 p-4 mb-6 space-y-4">
+        <div>
+          <p className="text-xs font-medium text-slate-500 mb-2">Año</p>
+          <div className="flex flex-wrap gap-2">
+            <Chip label="Todos" active={!anioSel} onClick={() => setAnioSel(null)} />
+            {anios.map((a) => <Chip key={a} label={a} active={anioSel === a} onClick={() => setAnioSel(anioSel === a ? null : a)} />)}
+          </div>
+        </div>
+        <div>
+          <p className="text-xs font-medium text-slate-500 mb-2">Tipo de NC</p>
+          <div className="flex flex-wrap gap-2">
+            {tipos.map((t) => <Chip key={t} label={t} active={tipoSel.includes(t)} onClick={() => toggleTipo(t)} />)}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <p className="text-xs font-medium text-slate-500 mb-2">Máquina</p>
+            <select value={maquinaSel || ""} onChange={(e) => setMaquinaSel(e.target.value || null)} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+              <option value="">Todas</option>
+              {maquinas.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-500 mb-2">Operario</p>
+            <select value={operarioSel || ""} onChange={(e) => setOperarioSel(e.target.value || null)} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+              <option value="">Todos</option>
+              {operarios.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={soloDevolucion} onChange={(e) => setSoloDevolucion(e.target.checked)} />
+            Solo con devolución
+          </label>
+          <div className="flex-1 min-w-[160px]">
+            <input type="text" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar NC, producto, cliente..." className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm" />
+          </div>
+          {hayFiltros && (
+            <button type="button" onClick={() => { setAnioSel(null); setTipoSel([]); setMaquinaSel(null); setOperarioSel(null); setSoloDevolucion(false); setBusqueda(""); }} className="text-xs text-slate-500 underline">
+              Limpiar filtros
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => exportarExcel(
+              filtrados.map((r) => ({
+                "Nº NC": r.numeroMostrado, Fecha: r.fecha, Tipo: r.tipoCategoria, Producto: r.producto,
+                Cliente: r.cliente, Máquina: r.maquina, Operario: r.operario, Devolución: r.devolucion, Estado: r.estado,
+              })),
+              "NC", `NC_Silver_${new Date().toISOString().slice(0, 10)}.xlsx`
+            )}
+            className="ml-auto bg-slate-800 text-white text-xs font-medium rounded-md px-4 py-2 hover:bg-slate-700"
+          >
+            Exportar a Excel
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <MetricCard label="NC en el filtro actual" value={filtrados.length} />
+        <MetricCard label="Con devolución" value={`${pctDevolucion}%`} sub={`${totalDevoluciones} casos`} />
+        <MetricCard label="Tipo más frecuente" value={tipoMasFrecuente} />
+        <MetricCard label="Años cubiertos" value={anioSel ? "1" : anios.length} />
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4 mb-6">
+        <div className="bg-white rounded-lg border border-slate-200 p-4">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">NC por mes {anioSel ? `— ${anioSel}` : "(todos los años)"}</h3>
+          <MonthlyTrend data={porMes} />
+        </div>
+        <div className="bg-white rounded-lg border border-slate-200 p-4">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">NC por tipo</h3>
+          <BarChart data={porTipo} />
+        </div>
+        <div className="bg-white rounded-lg border border-slate-200 p-4">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">Top clientes/proveedores</h3>
+          {porCliente.length > 0 ? <BarChart data={porCliente} /> : <p className="text-xs text-slate-400">Sin datos en este filtro</p>}
+        </div>
+        <div className="bg-white rounded-lg border border-slate-200 p-4">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">Top máquinas</h3>
+          {porMaquina.length > 0 ? <BarChart data={porMaquina} /> : <p className="text-xs text-slate-400">Sin datos en este filtro</p>}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-800">Listado ({filtrados.length})</h3>
+          <p className="text-xs text-slate-400">Mostrando hasta 50</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 text-slate-500">
+              <tr>
+                <th className="text-left px-3 py-2">NC</th>
+                <th className="text-left px-3 py-2">Fecha</th>
+                <th className="text-left px-3 py-2">Tipo</th>
+                <th className="text-left px-3 py-2">Producto</th>
+                <th className="text-left px-3 py-2">Cliente/Prov.</th>
+                <th className="text-left px-3 py-2">Máq.</th>
+                <th className="text-left px-3 py-2">Devol.</th>
+                <th className="text-left px-3 py-2">Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtrados.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 50).map((r) => (
+                <tr key={r.numero} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5 font-medium text-slate-700">{r.numeroMostrado}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{r.fecha}</td>
+                  <td className="px-3 py-1.5">
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium" style={{ background: (COLORES_TIPO[r.tipoCategoria] || "#334155") + "22", color: COLORES_TIPO[r.tipoCategoria] || "#334155" }}>
+                      {r.tipoCategoria}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 text-slate-600 max-w-[200px] truncate" title={r.producto}>{r.producto}</td>
+                  <td className="px-3 py-1.5 text-slate-600">{r.cliente}</td>
+                  <td className="px-3 py-1.5 text-slate-600">{r.maquina}</td>
+                  <td className="px-3 py-1.5">{r.devolucion === "SI" ? "Sí" : ""}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{r.estado}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VistaOperarios({ operariosData }) {
+  const anios = useMemo(() => [...new Set(operariosData.map((r) => parseFechaParts(r.fecha_produccion).anio).filter(Boolean))].sort((a, b) => b - a), [operariosData]);
+  const [anioSel, setAnioSel] = useState(null);
+  const [mesSel, setMesSel] = useState(null);
+
+  const filtrados = useMemo(() => {
+    return operariosData.filter((r) => {
+      const { anio, mes } = parseFechaParts(r.fecha_produccion);
+      if (anioSel && anio !== anioSel) return false;
+      if (mesSel && mes !== mesSel) return false;
+      return true;
+    });
+  }, [operariosData, anioSel, mesSel]);
+
+  const porOperario = useMemo(() => {
+    const map = {};
+    filtrados.forEach((r) => {
+      if (!r.operario) return;
+      if (!map[r.operario]) map[r.operario] = new Set();
+      map[r.operario].add(r.nc_numero);
+    });
+    return Object.entries(map)
+      .map(([operario, ncs]) => ({ operario, cantidad: ncs.size }))
+      .sort((a, b) => b.cantidad - a.cantidad);
+  }, [filtrados]);
+
+  return (
+    <div>
+      <div className="bg-white rounded-lg border border-slate-200 p-4 mb-6 space-y-4">
+        <p className="text-xs text-slate-500">
+          Para RRHH: cuántas NC tuvo cada operario en el período elegido. Cada NC cuenta una sola vez por operario, aunque haya afectado varios productos.
+        </p>
+        <div>
+          <p className="text-xs font-medium text-slate-500 mb-2">Año</p>
+          <div className="flex flex-wrap gap-2">
+            <Chip label="Todos" active={!anioSel} onClick={() => setAnioSel(null)} />
+            {anios.map((a) => <Chip key={a} label={a} active={anioSel === a} onClick={() => setAnioSel(anioSel === a ? null : a)} />)}
+          </div>
+        </div>
+        <div>
+          <p className="text-xs font-medium text-slate-500 mb-2">Mes</p>
+          <div className="flex flex-wrap gap-2">
+            <Chip label="Todos" active={!mesSel} onClick={() => setMesSel(null)} />
+            {MESES.map((m, i) => <Chip key={m} label={m} active={mesSel === i + 1} onClick={() => setMesSel(mesSel === i + 1 ? null : i + 1)} />)}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => exportarExcel(
+            porOperario.map((r) => ({ Operario: r.operario, "Cantidad de NC": r.cantidad })),
+            "Operarios", `Operarios_NC_${new Date().toISOString().slice(0, 10)}.xlsx`
+          )}
+          className="bg-slate-800 text-white text-xs font-medium rounded-md px-4 py-2 hover:bg-slate-700"
+        >
+          Exportar a Excel
+        </button>
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="p-4 border-b border-slate-100">
+          <h3 className="text-sm font-semibold text-slate-800">Operarios con NC en el período ({porOperario.length})</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs">
+            <tr>
+              <th className="text-left px-4 py-2">Operario</th>
+              <th className="text-left px-4 py-2">Cantidad de NC</th>
+            </tr>
+          </thead>
+          <tbody>
+            {porOperario.map((r) => (
+              <tr key={r.operario} className="border-t border-slate-100">
+                <td className="px-4 py-2 text-slate-700">{r.operario}</td>
+                <td className="px-4 py-2 text-slate-600">{r.cantidad}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Q11Dashboard() {
+  const [tab, setTab] = useState("general");
+  const [registros, setRegistros] = useState([]);
+  const [operariosData, setOperariosData] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API_BASE}/nc`).then((r) => r.json()),
+      fetch(`${API_BASE}/nc/operarios`).then((r) => r.json()),
+    ])
+      .then(([nc, ops]) => {
+        setRegistros(nc.map(mapNC));
+        setOperariosData(ops);
+      })
+      .catch((e) => setError("No se pudo conectar con la base de datos: " + e.message))
+      .finally(() => setCargando(false));
+  }, []);
+
+  return (
+    <div className="w-full max-w-5xl mx-auto p-6 bg-slate-50 min-h-screen">
+      <div className="mb-6">
+        <p className="text-xs font-medium text-slate-500 tracking-wide uppercase">Silver Industrial · Gestión de calidad</p>
+        <h1 className="text-xl font-semibold text-slate-800 mt-1">Q.11 2.0 — Registro y estadísticas de No Conformidades</h1>
+        <p className="text-sm text-slate-500 mt-1">
+          {cargando ? "Cargando..." : `${registros.length} NC registradas · conectado en vivo a Neon`}
+        </p>
+      </div>
+
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md p-3 mb-4">{error}</div>}
+
+      <div className="flex gap-2 mb-5">
+        <button type="button" onClick={() => setTab("general")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "general" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
+          Vista general
+        </button>
+        <button type="button" onClick={() => setTab("operarios")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "operarios" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
+          Operarios (RRHH)
+        </button>
+      </div>
+
+      {cargando ? (
+        <p className="text-sm text-slate-400">Cargando datos...</p>
+      ) : tab === "general" ? (
+        <VistaGeneral registros={registros} />
+      ) : (
+        <VistaOperarios operariosData={operariosData} />
+      )}
+
+      <p className="text-xs text-slate-400 mt-6">
+        Conectado en vivo a la base de datos — cada NC que se carga en la app aparece acá automáticamente.
+      </p>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Q11Dashboard />);
+
+</script>
+</body>
+</html>

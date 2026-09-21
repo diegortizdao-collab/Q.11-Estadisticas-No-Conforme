@@ -49,7 +49,7 @@ function mapNC(row) {
     fecha: row.fecha_produccion,
     anio,
     mes,
-    operario: row.operario || "",
+    operario: normalizarOperario(row.operario) || "",
     maquina: row.maquina || "",
     producto: row.producto || "",
     cliente: row.cliente || "",
@@ -58,7 +58,34 @@ function mapNC(row) {
   };
 }
 
-function Chip({ label, active, onClick }) {
+// Alias conocidos para nombres que aparecen truncados o distintos en el histórico.
+// Agregar acá a mano cuando se detecte otro caso — evita fusionar automáticamente
+// por "empieza igual", que podría mezclar personas distintas.
+const ALIAS_OPERARIOS = {
+  "graniera pablo": "Graniera Pablo Sebastian",
+};
+
+const PLACEHOLDERS_OPERARIO = /^(n\/a|n\/c|-+|--+|)$/i;
+
+function quitarAcentos(s) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+// Devuelve el nombre normalizado para mostrar, o null si es un placeholder (N/A, --, etc.)
+function normalizarOperario(nombreCrudo) {
+  if (!nombreCrudo) return null;
+  const limpio = nombreCrudo.trim();
+  if (PLACEHOLDERS_OPERARIO.test(limpio)) return null;
+  const clave = quitarAcentos(limpio).toLowerCase().replace(/\s+/g, " ").trim();
+  if (ALIAS_OPERARIOS[clave]) return ALIAS_OPERARIOS[clave];
+  return limpio;
+}
+
+function claveOperario(nombreNormalizado) {
+  return quitarAcentos(nombreNormalizado).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+
   return (
     <button
       type="button"
@@ -326,14 +353,20 @@ function VistaOperarios({ operariosData }) {
   }, [operariosData, anioSel, mesSel]);
 
   const porOperario = useMemo(() => {
-    const map = {};
+    const map = {}; // clave normalizada -> { display, ncs: Set }
     filtrados.forEach((r) => {
-      if (!r.operario) return;
-      if (!map[r.operario]) map[r.operario] = new Set();
-      map[r.operario].add(r.nc_numero);
+      const nombre = normalizarOperario(r.operario);
+      if (!nombre) return; // placeholder (N/A, --, etc.), se descarta
+      const clave = claveOperario(nombre);
+      if (!map[clave]) map[clave] = { display: nombre, ncs: new Set() };
+      // Preferir como nombre a mostrar la variante que tenga tildes, si aparece
+      if (nombre !== quitarAcentos(nombre) && map[clave].display === quitarAcentos(map[clave].display)) {
+        map[clave].display = nombre;
+      }
+      map[clave].ncs.add(r.nc_numero);
     });
-    return Object.entries(map)
-      .map(([operario, ncs]) => ({ operario, cantidad: ncs.size }))
+    return Object.values(map)
+      .map(({ display, ncs }) => ({ operario: display, cantidad: ncs.size }))
       .sort((a, b) => b.cantidad - a.cantidad);
   }, [filtrados]);
 

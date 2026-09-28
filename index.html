@@ -585,6 +585,144 @@ function VistaExportQ11({ ncRaw, operariosData }) {
   );
 }
 
+// Extrae el primer número de 3 a 6 dígitos del nombre de archivo — así detectamos
+// solos el Nº de NC en nombres tipo "NC_921.docx" o "921 - Pasa Cabo Octogonal.docx".
+function detectarNumeroDesdeNombre(nombreArchivo) {
+  const match = nombreArchivo.match(/\d{3,6}/);
+  return match ? Number(match[0]) : null;
+}
+
+// Sube documentos Word históricos (cargados a mano en el pasado, antes de esta app)
+// para las NC migradas del Q.11 histórico, así el auditor tiene el mismo link 📄 que
+// las NC nuevas aunque no hayan pasado por el flujo digital.
+function VistaCargaHistorica({ ncRaw, onSubido }) {
+  const migradas = ncRaw
+    .filter((n) => n.numero_original != null)
+    .slice()
+    .sort((a, b) => (b.numero_original || 0) - (a.numero_original || 0));
+
+  const [archivos, setArchivos] = useState([]); // { id, file, numeroInterno, estado, mensaje }
+
+  function agregarArchivos(fileList) {
+    const nuevos = Array.from(fileList).map((file) => {
+      const numeroDetectado = detectarNumeroDesdeNombre(file.name);
+      const coincidencia = migradas.find((n) => n.numero_original === numeroDetectado);
+      return {
+        id: `${file.name}-${Date.now()}-${Math.random()}`,
+        file,
+        numeroInterno: coincidencia ? coincidencia.numero : "",
+        estado: "pendiente",
+        mensaje: coincidencia ? `Detectado: Nº ${coincidencia.numero_original}` : "No se detectó el número — elegilo a mano",
+      };
+    });
+    setArchivos((prev) => [...prev, ...nuevos]);
+  }
+
+  function actualizarNumero(id, numeroInterno) {
+    setArchivos((prev) => prev.map((a) => (a.id === id ? { ...a, numeroInterno, mensaje: "" } : a)));
+  }
+
+  function quitar(id) {
+    setArchivos((prev) => prev.filter((a) => a.id !== id));
+  }
+
+  const [subiendoTodo, setSubiendoTodo] = useState(false);
+
+  async function subirTodos() {
+    setSubiendoTodo(true);
+    for (const a of archivos) {
+      if (a.estado === "ok" || !a.numeroInterno) continue;
+      setArchivos((prev) => prev.map((x) => (x.id === a.id ? { ...x, estado: "subiendo", mensaje: "" } : x)));
+      try {
+        const bytes = await a.file.arrayBuffer();
+        const res = await fetch(`${API_BASE}/nc/${a.numeroInterno}/documento`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+          body: bytes,
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Error ${res.status}`);
+        }
+        setArchivos((prev) => prev.map((x) => (x.id === a.id ? { ...x, estado: "ok", mensaje: "Subido" } : x)));
+      } catch (e) {
+        setArchivos((prev) => prev.map((x) => (x.id === a.id ? { ...x, estado: "error", mensaje: e.message } : x)));
+      }
+    }
+    setSubiendoTodo(false);
+    if (onSubido) onSubido();
+  }
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-800">Cargar documentos Word históricos</h3>
+        <p className="text-xs text-slate-500 mt-1">
+          Para NC migradas del histórico que ya tenías documentadas en Word antes de esta app. Arrastrá o seleccioná
+          varios .docx a la vez — si el nombre de archivo incluye el número de NC, se detecta solo.
+        </p>
+      </div>
+
+      <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg p-6 cursor-pointer hover:border-slate-400 text-sm text-slate-500">
+        Arrastrá archivos .docx acá o hacé clic para elegirlos
+        <input
+          type="file"
+          accept=".docx"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            agregarArchivos(e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </label>
+
+      {archivos.length > 0 && (
+        <div className="space-y-2">
+          {archivos.map((a) => (
+            <div key={a.id} className="flex items-center gap-3 border border-slate-200 rounded-md p-2 text-sm">
+              <span className="flex-1 truncate text-slate-700" title={a.file.name}>{a.file.name}</span>
+              <select
+                value={a.numeroInterno}
+                onChange={(e) => actualizarNumero(a.id, Number(e.target.value))}
+                disabled={a.estado === "ok" || a.estado === "subiendo"}
+                className="border border-slate-300 rounded-md px-2 py-1 text-xs"
+              >
+                <option value="">Elegir NC…</option>
+                {migradas.map((n) => (
+                  <option key={n.numero} value={n.numero}>
+                    Nº {n.numero_original} — {n.producto || ""}
+                  </option>
+                ))}
+              </select>
+              <span
+                className={`text-xs whitespace-nowrap ${
+                  a.estado === "ok" ? "text-green-600" : a.estado === "error" ? "text-red-600" : "text-slate-400"
+                }`}
+              >
+                {a.estado === "subiendo" ? "Subiendo…" : a.mensaje}
+              </span>
+              {a.estado !== "subiendo" && (
+                <button type="button" onClick={() => quitar(a.id)} className="text-slate-400 hover:text-slate-600">
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={subirTodos}
+            disabled={subiendoTodo || archivos.every((a) => !a.numeroInterno || a.estado === "ok")}
+            className="mt-2 px-4 py-2 rounded-md text-sm font-medium bg-slate-800 text-white disabled:opacity-50"
+          >
+            {subiendoTodo ? "Subiendo…" : "Subir todos"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Q11Dashboard() {
   const [tab, setTab] = useState("general");
   const [registros, setRegistros] = useState([]);
@@ -593,8 +731,8 @@ function Q11Dashboard() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    Promise.all([
+  function recargarTodo() {
+    return Promise.all([
       fetch(`${API_BASE}/nc`).then((r) => r.json()),
       fetch(`${API_BASE}/nc/operarios`).then((r) => r.json()),
     ])
@@ -605,6 +743,10 @@ function Q11Dashboard() {
       })
       .catch((e) => setError("No se pudo conectar con la base de datos: " + e.message))
       .finally(() => setCargando(false));
+  }
+
+  useEffect(() => {
+    recargarTodo();
   }, []);
 
   return (
@@ -629,6 +771,9 @@ function Q11Dashboard() {
         <button type="button" onClick={() => setTab("exportQ11")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "exportQ11" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
           Exportar Q.11 (formato oficial)
         </button>
+        <button type="button" onClick={() => setTab("cargaHistorica")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "cargaHistorica" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
+          Cargar Word históricos
+        </button>
       </div>
 
       {cargando ? (
@@ -637,8 +782,10 @@ function Q11Dashboard() {
         <VistaGeneral registros={registros} />
       ) : tab === "operarios" ? (
         <VistaOperarios ncRaw={ncRaw} operariosData={operariosData} />
-      ) : (
+      ) : tab === "exportQ11" ? (
         <VistaExportQ11 ncRaw={ncRaw} operariosData={operariosData} />
+      ) : (
+        <VistaCargaHistorica ncRaw={ncRaw} onSubido={recargarTodo} />
       )}
 
       <p className="text-xs text-slate-400 mt-6">

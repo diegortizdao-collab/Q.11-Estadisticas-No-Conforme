@@ -55,6 +55,7 @@ function mapNC(row) {
     cliente: row.cliente || "",
     devolucion: row.con_devolucion ? "SI" : "NO",
     estado: row.estado || "",
+    documentoGeneradoEn: row.documento_generado_en || null,
   };
 }
 
@@ -316,7 +317,21 @@ function VistaGeneral({ registros }) {
             <tbody>
               {filtrados.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 50).map((r) => (
                 <tr key={r.numero} className="border-t border-slate-100">
-                  <td className="px-3 py-1.5 font-medium text-slate-700">{r.numeroMostrado}</td>
+                  <td className="px-3 py-1.5 font-medium text-slate-700">
+                    {r.documentoGeneradoEn ? (
+                      <a
+                        href={`${API_BASE}/nc/${r.numero}/documento`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                        title="Ver registro Q.21 (Word) generado desde la app"
+                      >
+                        {r.numeroMostrado} 📄
+                      </a>
+                    ) : (
+                      r.numeroMostrado
+                    )}
+                  </td>
                   <td className="px-3 py-1.5 text-slate-500">{r.fecha}</td>
                   <td className="px-3 py-1.5">
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium" style={{ background: (COLORES_TIPO[r.tipoCategoria] || "#334155") + "22", color: COLORES_TIPO[r.tipoCategoria] || "#334155" }}>

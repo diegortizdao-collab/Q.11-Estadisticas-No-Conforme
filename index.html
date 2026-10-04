@@ -792,8 +792,8 @@ function Q11Dashboard() {
       fetch(`${API_BASE}/nc/operarios`).then((r) => r.json()),
     ])
       .then(([nc, ops]) => {
-        // Las oportunidades de mejora tienen numeración propia y no integran las estadísticas de NC
-        const soloNC = nc.filter((n) => n.tipo !== "Op. de mejora");
+        // Las OM y los hallazgos nuevos tienen numeración propia (número interno >= 200000) y no integran las estadísticas de NC
+        const soloNC = nc.filter((n) => n.numero < 200000);
         setRegistros(soloNC.map(mapNC));
         setNcRaw(soloNC);
         setOperariosData(ops);

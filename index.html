@@ -84,6 +84,7 @@ const COLORES_TIPO = {
   "Proveedores": "#72243e",
   "Material provisto por Cliente": "#3c3489",
   "Hallazgo de auditoría": "#3b6d11",
+  "Hallazgos de Auditoría": "#3b6d11",
   "No conformidad": "#0f6e56",
   "Op. de mejora": "#185fa5",
 };
@@ -99,7 +100,7 @@ function mapNC(row) {
   return {
     numero: row.numero,
     numeroMostrado: row.numero_original || row.numero,
-    tipoCategoria: row.tipo_nc_historico || row.tipo || "Sin clasificar",
+    tipoCategoria: row.clasificacion || row.tipo_nc_historico || row.tipo || "Sin clasificar",
     fecha: row.fecha_produccion,
     anio,
     mes,
@@ -544,7 +545,7 @@ function construirFilasQ11Oficial(ncRaw, operariosData) {
       "Cant. Prod. (unid.)": n.cantidad_piezas || "",
       Obsevaciones: n.descripcion || "",
       "Costos asociados": n.costo_asociado || "",
-      "Tipo NC": n.tipo_nc_historico || n.tipo || "",
+      "Tipo NC": n.clasificacion || n.tipo_nc_historico || n.tipo || "",
       Raiz: n.causa_raiz || "",
       "CON DEVOLUCION": n.con_devolucion ? "SI" : "NO",
     };
@@ -791,8 +792,10 @@ function Q11Dashboard() {
       fetch(`${API_BASE}/nc/operarios`).then((r) => r.json()),
     ])
       .then(([nc, ops]) => {
-        setRegistros(nc.map(mapNC));
-        setNcRaw(nc);
+        // Las oportunidades de mejora tienen numeración propia y no integran las estadísticas de NC
+        const soloNC = nc.filter((n) => n.tipo !== "Op. de mejora");
+        setRegistros(soloNC.map(mapNC));
+        setNcRaw(soloNC);
         setOperariosData(ops);
       })
       .catch((e) => setError("No se pudo conectar con la base de datos: " + e.message))

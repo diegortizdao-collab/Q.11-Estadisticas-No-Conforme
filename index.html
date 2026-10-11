@@ -75,17 +75,51 @@ const { useState, useEffect, useMemo } = React;
 
 const API_BASE = "https://nc-silver-api.diegortizdao.workers.dev/api";
 
-// Descarga el Q.21 con la sesión (un enlace directo no envía el token y da "No autorizado").
+// Vista previa del Q.21 (Word) en pantalla, con la sesión; botón para descargar si hace falta.
+function cargarScript(src, listo) {
+  return new Promise((res, rej) => {
+    if (listo()) return res();
+    const sc = document.createElement("script");
+    sc.src = src; sc.onload = () => res(); sc.onerror = () => rej(new Error("No se pudo cargar " + src));
+    document.head.appendChild(sc);
+  });
+}
 async function descargarQ21(numero, mostrado) {
+  const nombre = `Q21_NC_${mostrado || numero}.docx`;
+  const ov = document.createElement("div");
+  ov.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px";
+  ov.innerHTML = '<div style="background:#fff;border-radius:10px;width:min(980px,100%);height:min(92vh,100%);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.35)">' +
+    '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #e2e8f0;font:600 14px system-ui">' +
+    '<span style="flex:1">Q.21 · NC ' + (mostrado || numero) + '</span>' +
+    '<button data-a="d" style="padding:6px 12px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;font:500 13px system-ui;cursor:pointer" disabled>Descargar</button>' +
+    '<button data-a="c" style="padding:6px 12px;border:0;border-radius:6px;background:#1e293b;color:#fff;font:500 13px system-ui;cursor:pointer">Cerrar</button></div>' +
+    '<div data-a="b" style="flex:1;overflow:auto;background:#e5e7eb;padding:12px"><div style="font:14px system-ui;color:#475569;padding:20px">Cargando documento…</div></div></div>';
+  document.body.appendChild(ov);
+  const cerrar = () => ov.remove();
+  ov.querySelector('[data-a="c"]').onclick = cerrar;
+  ov.addEventListener("click", (e) => { if (e.target === ov) cerrar(); });
+  const cuerpo = ov.querySelector('[data-a="b"]');
   try {
     const res = await fetch(`${API_BASE}/nc/${numero}/documento`);
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert(d.error || `Error ${res.status}`); return; }
-    const url = URL.createObjectURL(await res.blob());
-    const a = document.createElement("a");
-    a.href = url; a.download = `Q21_NC_${mostrado || numero}.docx`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  } catch (e) { alert("No se pudo descargar: " + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); cuerpo.innerHTML = '<div style="font:14px system-ui;color:#b91c1c;padding:20px"></div>'; cuerpo.firstChild.textContent = d.error || `Error ${res.status}`; return; }
+    const blob = await res.blob();
+    const bd = ov.querySelector('[data-a="d"]');
+    bd.disabled = false;
+    bd.onclick = () => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = nombre;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    };
+    try {
+      await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js", () => window.JSZip);
+      await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/docx-preview/0.3.2/docx-preview.min.js", () => window.docx);
+      cuerpo.innerHTML = "";
+      await window.docx.renderAsync(blob, cuerpo, null, { inWrapper: true, ignoreWidth: false, breakPages: true });
+    } catch (e) {
+      cuerpo.innerHTML = '<div style="font:14px system-ui;color:#475569;padding:20px">No se pudo mostrar la vista previa. Usá "Descargar".</div>';
+    }
+  } catch (e) { cuerpo.innerHTML = '<div style="font:14px system-ui;color:#b91c1c;padding:20px"></div>'; cuerpo.firstChild.textContent = "No se pudo abrir: " + e.message; }
 }
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const COLORES_TIPO = {
@@ -391,7 +425,7 @@ function VistaGeneral({ registros }) {
                         href="#"
                         onClick={(e) => { e.preventDefault(); descargarQ21(r.numero, r.numeroMostrado); }}
                         className="text-blue-600 hover:underline"
-                        title="Ver registro Q.21 (Word) generado desde la app"
+                        title="Ver vista previa del registro Q.21"
                       >
                         {r.numeroMostrado} 📄
                       </a>

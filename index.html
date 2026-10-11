@@ -74,6 +74,19 @@
 const { useState, useEffect, useMemo } = React;
 
 const API_BASE = "https://nc-silver-api.diegortizdao.workers.dev/api";
+
+// Descarga el Q.21 con la sesión (un enlace directo no envía el token y da "No autorizado").
+async function descargarQ21(numero, mostrado) {
+  try {
+    const res = await fetch(`${API_BASE}/nc/${numero}/documento`);
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert(d.error || `Error ${res.status}`); return; }
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = `Q21_NC_${mostrado || numero}.docx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) { alert("No se pudo descargar: " + e.message); }
+}
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const COLORES_TIPO = {
   "Defectos x Control de Calidad": "#0f6e56",
@@ -375,9 +388,8 @@ function VistaGeneral({ registros }) {
                   <td className="px-3 py-1.5 font-medium text-slate-700">
                     {r.documentoGeneradoEn ? (
                       <a
-                        href={`${API_BASE}/nc/${r.numero}/documento`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        href="#"
+                        onClick={(e) => { e.preventDefault(); descargarQ21(r.numero, r.numeroMostrado); }}
                         className="text-blue-600 hover:underline"
                         title="Ver registro Q.21 (Word) generado desde la app"
                       >
@@ -387,7 +399,7 @@ function VistaGeneral({ registros }) {
                       r.numeroMostrado
                     )}
                   </td>
-                  <td className="px-3 py-1.5 text-slate-500">{r.fecha}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{String(r.fecha || "").slice(0, 10)}</td>
                   <td className="px-3 py-1.5">
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium" style={{ background: (COLORES_TIPO[r.tipoCategoria] || "#334155") + "22", color: COLORES_TIPO[r.tipoCategoria] || "#334155" }}>
                       {r.tipoCategoria}

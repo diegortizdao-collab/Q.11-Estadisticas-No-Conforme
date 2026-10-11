@@ -230,15 +230,49 @@ function BarChart({ data, maxLabel = 10 }) {
 }
 
 function MonthlyTrend({ data }) {
-  const max = Math.max(...data.map((d) => d.value), 1);
+  const H = 160; // alto útil del área de barras, en px
+  const maxReal = Math.max(...data.map((d) => d.value), 0);
+  // Escala "redonda" (techo) para que las líneas de referencia sean números enteros.
+  const paso = maxReal <= 5 ? 1 : maxReal <= 10 ? 2 : maxReal <= 25 ? 5 : maxReal <= 50 ? 10 : maxReal <= 100 ? 20 : 50;
+  const techo = Math.max(paso, Math.ceil(maxReal / paso) * paso);
+  const lineas = []; for (let v = 0; v <= techo; v += paso) lineas.push(v);
+  const total = data.reduce((a, d) => a + d.value, 0);
+  const prom = total / 12;
   return (
-    <div className="flex items-end gap-1 h-32">
-      {data.map((d) => (
-        <div key={d.label} className="flex-1 flex flex-col items-center gap-1">
-          <div className="w-full bg-slate-700 rounded-t" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value > 0 ? "2px" : "0" }} title={`${d.label}: ${d.value}`} />
-          <span className="text-[10px] text-slate-400">{d.label}</span>
+    <div>
+      <div className="flex pt-4" style={{ height: H + 20 }}>
+        <div className="relative w-7 mr-1" style={{ height: H }}>
+          {lineas.map((v) => (
+            <span key={v} className="absolute right-0 text-[10px] text-slate-400" style={{ bottom: (v / techo) * H - 6 }}>{v}</span>
+          ))}
         </div>
-      ))}
+        <div className="relative flex-1" style={{ height: H }}>
+          {lineas.map((v) => (
+            <div key={v} className="absolute left-0 right-0 border-t border-slate-100" style={{ bottom: (v / techo) * H }} />
+          ))}
+          {total > 0 && (
+            <div className="absolute left-0 right-0 border-t border-dashed border-amber-500" style={{ bottom: (prom / techo) * H }} title={`Promedio mensual: ${prom.toFixed(1)}`} />
+          )}
+          <div className="absolute inset-0 flex items-end gap-1.5">
+            {data.map((d) => {
+              const esPico = maxReal > 0 && d.value === maxReal;
+              const h = Math.round((d.value / techo) * H);
+              return (
+                <div key={d.label} className="flex-1 relative h-full" title={`${d.label}: ${d.value} NC`}>
+                  <span className={"absolute left-0 right-0 text-center text-[11px] font-semibold " + (d.value === 0 ? "text-slate-300" : esPico ? "text-red-600" : "text-slate-700")} style={{ bottom: Math.max(h, d.value > 0 ? 3 : 0) + 2 }}>{d.value}</span>
+                  <div className="absolute bottom-0 left-0 right-0 rounded-t" style={{ height: h, minHeight: d.value > 0 ? 3 : 0, background: esPico ? "#dc2626" : "#475569" }} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <div className="flex ml-8 gap-1.5 mt-1">
+        {data.map((d) => (<span key={d.label} className="flex-1 text-center text-[10px] text-slate-500">{d.label}</span>))}
+      </div>
+      <p className="text-[11px] text-slate-400 mt-2">
+        Total {total} NC · promedio {prom.toFixed(1)}/mes (línea punteada){maxReal > 0 ? " · mes pico en rojo" : ""}
+      </p>
     </div>
   );
 }

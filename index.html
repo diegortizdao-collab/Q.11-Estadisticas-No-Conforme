@@ -16,111 +16,10 @@
 </head>
 <body>
 <div id="root"></div>
-<script>
-// ---- Acceso (mail autorizado + contraseña). El Worker valida; acá solo se guarda el token de sesión (12 hs).
-(function () {
-  var API = "https://nc-silver-api.diegortizdao.workers.dev/api";
-  var KEY = "sgc_nc_token";
-  function leer() { try { var t = JSON.parse(localStorage.getItem(KEY) || "null"); return t && t.expira > Date.now() ? t : null; } catch (e) { return null; } }
-  function guardar(t) { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch (e) {} }
-  function borrar() { try { localStorage.removeItem(KEY); } catch (e) {} }
-  window.cerrarSesionNC = function () { borrar(); location.reload(); };
-  window.usuarioNC = function () { var t = leer(); return t ? t.email : null; };
-
-  var f0 = window.fetch.bind(window);
-  window.fetch = function (url, opts) {
-    if (typeof url === "string" && url.indexOf(API) === 0 && url.indexOf(API + "/login") !== 0) {
-      var t = leer(); opts = opts || {}; opts.headers = Object.assign({}, opts.headers || {});
-      // Sin sesión no se llama a la API (la app queda oculta detrás del login): evita el bucle de recargas.
-      if (!t) return Promise.reject(new Error("Sin sesión"));
-      opts.headers["Authorization"] = "Bearer " + t.token;
-      return f0(url, opts).then(function (r) {
-        if (r.status === 401) {
-          borrar();
-          var n = Number(sessionStorage.getItem("sgc_nc_reload") || 0);
-          if (Date.now() - n > 10000) { sessionStorage.setItem("sgc_nc_reload", String(Date.now())); location.reload(); }
-        }
-        return r;
-      });
-    }
-    return f0(url, opts);
-  };
-
-  if (leer()) return;
-  document.addEventListener("DOMContentLoaded", function () {
-    var root = document.getElementById("root"); if (root) root.style.display = "none";
-    var d = document.createElement("div");
-    d.style.cssText = "min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-family:system-ui,sans-serif";
-    d.innerHTML = '<form id="nc-login" style="background:#fff;padding:28px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);width:min(92vw,360px)">' +
-      '<h2 style="margin:0 0 4px;font-size:18px;color:#1e293b">SGC Silver Industrial</h2><p style="margin:0 0 16px;font-size:13px;color:#64748b">Acceso restringido. Ingresá con tu mail autorizado.</p>' +
-      '<input id="nc-mail" type="email" placeholder="Mail" autocomplete="username" required style="width:100%;box-sizing:border-box;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px">' +
-      '<input id="nc-pass" type="password" placeholder="Contraseña" autocomplete="current-password" required style="width:100%;box-sizing:border-box;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px">' +
-      '<button style="width:100%;padding:10px;border:0;border-radius:8px;background:#1e293b;color:#fff;font-size:15px;cursor:pointer">Ingresar</button>' +
-      '<p id="nc-err" style="color:#b91c1c;font-size:13px;min-height:18px;margin:10px 0 0"></p></form>';
-    document.body.appendChild(d);
-    d.querySelector("form").addEventListener("submit", function (e) {
-      e.preventDefault(); var err = d.querySelector("#nc-err"); err.textContent = "Verificando...";
-      f0(API + "/login", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: d.querySelector("#nc-mail").value, password: d.querySelector("#nc-pass").value }) })
-        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-        .then(function (x) { if (!x.ok) { err.textContent = x.j.error || "No se pudo ingresar"; return; } guardar({ token: x.j.token, email: x.j.email, expira: x.j.expira }); location.reload(); })
-        .catch(function () { err.textContent = "No se pudo conectar con el servidor"; });
-    });
-  });
-})();
-</script>
-
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
 
 const API_BASE = "https://nc-silver-api.diegortizdao.workers.dev/api";
-
-// Vista previa del Q.21 (Word) en pantalla, con la sesión; botón para descargar si hace falta.
-function cargarScript(src, listo) {
-  return new Promise((res, rej) => {
-    if (listo()) return res();
-    const sc = document.createElement("script");
-    sc.src = src; sc.onload = () => res(); sc.onerror = () => rej(new Error("No se pudo cargar " + src));
-    document.head.appendChild(sc);
-  });
-}
-async function descargarQ21(numero, mostrado) {
-  const nombre = `Q21_NC_${mostrado || numero}.docx`;
-  const ov = document.createElement("div");
-  ov.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px";
-  ov.innerHTML = '<div style="background:#fff;border-radius:10px;width:min(980px,100%);height:min(92vh,100%);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.35)">' +
-    '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #e2e8f0;font:600 14px system-ui">' +
-    '<span style="flex:1">Q.21 · NC ' + (mostrado || numero) + '</span>' +
-    '<button data-a="d" style="padding:6px 12px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;font:500 13px system-ui;cursor:pointer" disabled>Descargar</button>' +
-    '<button data-a="c" style="padding:6px 12px;border:0;border-radius:6px;background:#1e293b;color:#fff;font:500 13px system-ui;cursor:pointer">Cerrar</button></div>' +
-    '<div data-a="b" style="flex:1;overflow:auto;background:#e5e7eb;padding:12px"><div style="font:14px system-ui;color:#475569;padding:20px">Cargando documento…</div></div></div>';
-  document.body.appendChild(ov);
-  const cerrar = () => ov.remove();
-  ov.querySelector('[data-a="c"]').onclick = cerrar;
-  ov.addEventListener("click", (e) => { if (e.target === ov) cerrar(); });
-  const cuerpo = ov.querySelector('[data-a="b"]');
-  try {
-    const res = await fetch(`${API_BASE}/nc/${numero}/documento`);
-    if (!res.ok) { const d = await res.json().catch(() => ({})); cuerpo.innerHTML = '<div style="font:14px system-ui;color:#b91c1c;padding:20px"></div>'; cuerpo.firstChild.textContent = d.error || `Error ${res.status}`; return; }
-    const blob = await res.blob();
-    const bd = ov.querySelector('[data-a="d"]');
-    bd.disabled = false;
-    bd.onclick = () => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = nombre;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-    };
-    try {
-      await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js", () => window.JSZip);
-      await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/docx-preview/0.3.2/docx-preview.min.js", () => window.docx);
-      cuerpo.innerHTML = "";
-      await window.docx.renderAsync(blob, cuerpo, null, { inWrapper: true, ignoreWidth: false, breakPages: true });
-    } catch (e) {
-      cuerpo.innerHTML = '<div style="font:14px system-ui;color:#475569;padding:20px">No se pudo mostrar la vista previa. Usá "Descargar".</div>';
-    }
-  } catch (e) { cuerpo.innerHTML = '<div style="font:14px system-ui;color:#b91c1c;padding:20px"></div>'; cuerpo.firstChild.textContent = "No se pudo abrir: " + e.message; }
-}
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const COLORES_TIPO = {
   "Defectos x Control de Calidad": "#0f6e56",
@@ -131,7 +30,6 @@ const COLORES_TIPO = {
   "Proveedores": "#72243e",
   "Material provisto por Cliente": "#3c3489",
   "Hallazgo de auditoría": "#3b6d11",
-  "Hallazgos de Auditoría": "#3b6d11",
   "No conformidad": "#0f6e56",
   "Op. de mejora": "#185fa5",
 };
@@ -147,7 +45,7 @@ function mapNC(row) {
   return {
     numero: row.numero,
     numeroMostrado: row.numero_original || row.numero,
-    tipoCategoria: row.clasificacion || row.tipo_nc_historico || row.tipo || "Sin clasificar",
+    tipoCategoria: row.tipo_nc_historico || row.tipo || "Sin clasificar",
     fecha: row.fecha_produccion,
     anio,
     mes,
@@ -230,49 +128,15 @@ function BarChart({ data, maxLabel = 10 }) {
 }
 
 function MonthlyTrend({ data }) {
-  const H = 160; // alto útil del área de barras, en px
-  const maxReal = Math.max(...data.map((d) => d.value), 0);
-  // Escala "redonda" (techo) para que las líneas de referencia sean números enteros.
-  const paso = maxReal <= 5 ? 1 : maxReal <= 10 ? 2 : maxReal <= 25 ? 5 : maxReal <= 50 ? 10 : maxReal <= 100 ? 20 : 50;
-  const techo = Math.max(paso, Math.ceil(maxReal / paso) * paso);
-  const lineas = []; for (let v = 0; v <= techo; v += paso) lineas.push(v);
-  const total = data.reduce((a, d) => a + d.value, 0);
-  const prom = total / 12;
+  const max = Math.max(...data.map((d) => d.value), 1);
   return (
-    <div>
-      <div className="flex pt-4" style={{ height: H + 20 }}>
-        <div className="relative w-7 mr-1" style={{ height: H }}>
-          {lineas.map((v) => (
-            <span key={v} className="absolute right-0 text-[10px] text-slate-400" style={{ bottom: (v / techo) * H - 6 }}>{v}</span>
-          ))}
+    <div className="flex items-end gap-1 h-32">
+      {data.map((d) => (
+        <div key={d.label} className="flex-1 flex flex-col items-center gap-1">
+          <div className="w-full bg-slate-700 rounded-t" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value > 0 ? "2px" : "0" }} title={`${d.label}: ${d.value}`} />
+          <span className="text-[10px] text-slate-400">{d.label}</span>
         </div>
-        <div className="relative flex-1" style={{ height: H }}>
-          {lineas.map((v) => (
-            <div key={v} className="absolute left-0 right-0 border-t border-slate-100" style={{ bottom: (v / techo) * H }} />
-          ))}
-          {total > 0 && (
-            <div className="absolute left-0 right-0 border-t border-dashed border-amber-500" style={{ bottom: (prom / techo) * H }} title={`Promedio mensual: ${prom.toFixed(1)}`} />
-          )}
-          <div className="absolute inset-0 flex items-end gap-1.5">
-            {data.map((d) => {
-              const esPico = maxReal > 0 && d.value === maxReal;
-              const h = Math.round((d.value / techo) * H);
-              return (
-                <div key={d.label} className="flex-1 relative h-full" title={`${d.label}: ${d.value} NC`}>
-                  <span className={"absolute left-0 right-0 text-center text-[11px] font-semibold " + (d.value === 0 ? "text-slate-300" : esPico ? "text-red-600" : "text-slate-700")} style={{ bottom: Math.max(h, d.value > 0 ? 3 : 0) + 2 }}>{d.value}</span>
-                  <div className="absolute bottom-0 left-0 right-0 rounded-t" style={{ height: h, minHeight: d.value > 0 ? 3 : 0, background: esPico ? "#dc2626" : "#475569" }} />
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-      <div className="flex ml-8 gap-1.5 mt-1">
-        {data.map((d) => (<span key={d.label} className="flex-1 text-center text-[10px] text-slate-500">{d.label}</span>))}
-      </div>
-      <p className="text-[11px] text-slate-400 mt-2">
-        Total {total} NC · promedio {prom.toFixed(1)}/mes (línea punteada){maxReal > 0 ? " · mes pico en rojo" : ""}
-      </p>
+      ))}
     </div>
   );
 }
@@ -456,10 +320,11 @@ function VistaGeneral({ registros }) {
                   <td className="px-3 py-1.5 font-medium text-slate-700">
                     {r.documentoGeneradoEn ? (
                       <a
-                        href="#"
-                        onClick={(e) => { e.preventDefault(); descargarQ21(r.numero, r.numeroMostrado); }}
+                        href={`${API_BASE}/nc/${r.numero}/documento`}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="text-blue-600 hover:underline"
-                        title="Ver vista previa del registro Q.21"
+                        title="Ver registro Q.21 (Word) generado desde la app"
                       >
                         {r.numeroMostrado} 📄
                       </a>
@@ -467,7 +332,7 @@ function VistaGeneral({ registros }) {
                       r.numeroMostrado
                     )}
                   </td>
-                  <td className="px-3 py-1.5 text-slate-500">{String(r.fecha || "").slice(0, 10)}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{r.fecha}</td>
                   <td className="px-3 py-1.5">
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium" style={{ background: (COLORES_TIPO[r.tipoCategoria] || "#334155") + "22", color: COLORES_TIPO[r.tipoCategoria] || "#334155" }}>
                       {r.tipoCategoria}
@@ -625,7 +490,7 @@ function construirFilasQ11Oficial(ncRaw, operariosData) {
       "Cant. Prod. (unid.)": n.cantidad_piezas || "",
       Obsevaciones: n.descripcion || "",
       "Costos asociados": n.costo_asociado || "",
-      "Tipo NC": n.clasificacion || n.tipo_nc_historico || n.tipo || "",
+      "Tipo NC": n.tipo_nc_historico || n.tipo || "",
       Raiz: n.causa_raiz || "",
       "CON DEVOLUCION": n.con_devolucion ? "SI" : "NO",
     };
@@ -726,6 +591,115 @@ function detectarNumeroDesdeNombre(nombreArchivo) {
   const match = nombreArchivo.match(/\d{3,6}/);
   return match ? Number(match[0]) : null;
 }
+
+// ---------- Q.25 Registro de oportunidades de mejora (Rev 0) ----------
+function VistaQ25() {
+  const [om, setOm] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    fetch(`${API_BASE}/om`).then((r) => r.json()).then((d) => {
+      if (!Array.isArray(d)) throw new Error(d.error || "Respuesta inesperada");
+      setOm(d);
+    }).catch((e) => setError(e.message));
+  }, []);
+
+  const d10 = (v) => (v ? String(v).slice(0, 10) : "");
+  const hoy = new Date().toISOString().slice(0, 10);
+  const proxima = (iso) => {
+    if (!iso) return "";
+    const f = new Date(iso.slice(0, 10) + "T00:00:00Z");
+    f.setUTCMonth(f.getUTCMonth() + 6);
+    return f.toISOString().slice(0, 10);
+  };
+  const vencida = (o) => o.vigencia === "Sí" && (!o.fecha_vigencia || proxima(d10(o.fecha_vigencia)) < hoy);
+  const num = (o) => o.numero_original || o.nc_numero;
+
+  if (error) return <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md p-3">No se pudo cargar la Q.25: {error}</div>;
+  if (!om) return <p className="text-sm text-slate-400">Cargando Q.25...</p>;
+
+  const cuenta = (f) => om.filter(f).length;
+  const origenes = [...new Set(om.map((o) => o.origen || "Sin completar"))];
+
+  function exportar() {
+    const filas = om.map((o) => ({
+      "Fecha": d10(o.fecha_produccion),
+      "Nº": num(o),
+      "Origen": o.origen || "",
+      "Proponente": o.proponente || "",
+      "Descripción": o.descripcion || "",
+      "Responsable de implementación": o.responsable || "",
+      "Fecha prevista de implementación": d10(o.fecha_prevista),
+      "Beneficio esperado": o.beneficio_esperado || "",
+      "Estado": o.estado || "",
+      "Vigencia": o.vigencia || "",
+      "Fecha de vigencia": d10(o.fecha_vigencia),
+      "Próxima revisión": o.vigencia === "Sí" ? proxima(d10(o.fecha_vigencia)) : "",
+    }));
+    exportarExcel(filas, "Q.25 Rev 0", "Q25_Registro_Oportunidades_Mejora_Rev0.xlsx");
+  }
+
+  const kpi = (t, v, c) => (
+    <div className="bg-white border border-slate-200 rounded-lg p-3">
+      <div className="text-xs text-slate-500">{t}</div>
+      <div className={`text-2xl font-semibold ${c || "text-slate-800"}`}>{v}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold text-slate-800">Q.25 — Registro de oportunidades de mejora (Rev. 0)</h2>
+        <button type="button" onClick={exportar} className="px-3 py-2 rounded-md text-sm font-medium bg-slate-800 text-white">Exportar a Excel</button>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+        {kpi("Total OM", om.length)}
+        {kpi("Implementadas", cuenta((o) => o.estado === "Implementado"), "text-green-700")}
+        {kpi("En proceso", cuenta((o) => o.estado === "En proceso"), "text-amber-600")}
+        {kpi("Pendientes", cuenta((o) => o.estado === "Pendiente"))}
+        {kpi("Revisiones vencidas", cuenta(vencida), "text-red-600")}
+      </div>
+      <div className="text-xs text-slate-600 mb-3">
+        Por origen: {origenes.map((g) => `${g}: ${cuenta((o) => (o.origen || "Sin completar") === g)}`).join(" · ") || "—"}
+        {" · "}Vigentes: {cuenta((o) => o.vigencia === "Sí")}
+      </div>
+      <div className="overflow-x-auto bg-white border border-slate-200 rounded-lg">
+        <table className="min-w-full text-xs">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>{["Fecha","Nº","Origen","Proponente","Descripción","Responsable","Prevista","Beneficio","Estado","Vigencia","Fecha vigencia","Próxima revisión"].map((h) => <th key={h} className="text-left px-2 py-2 font-medium">{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {om.map((o) => (
+              <tr key={o.nc_numero} className="border-t border-slate-100 align-top">
+                <td className="px-2 py-2 whitespace-nowrap">{d10(o.fecha_produccion)}</td>
+                <td className="px-2 py-2 whitespace-nowrap">
+                  {o.documento_generado_en
+                    ? <a className="text-blue-700 underline" href={`${API_BASE}/nc/${o.nc_numero}/documento`} target="_blank" rel="noreferrer">📄 {num(o)}</a>
+                    : num(o)}
+                </td>
+                <td className="px-2 py-2">{o.origen || <span className="text-slate-400">—</span>}</td>
+                <td className="px-2 py-2">{o.proponente || ""}</td>
+                <td className="px-2 py-2 max-w-xs">{o.descripcion}</td>
+                <td className="px-2 py-2">{o.responsable || ""}</td>
+                <td className="px-2 py-2 whitespace-nowrap">{d10(o.fecha_prevista)}</td>
+                <td className="px-2 py-2 max-w-xs">{o.beneficio_esperado || ""}</td>
+                <td className="px-2 py-2">{o.estado || <span className="text-slate-400">—</span>}</td>
+                <td className="px-2 py-2">{o.vigencia || ""}</td>
+                <td className="px-2 py-2 whitespace-nowrap">{d10(o.fecha_vigencia)}</td>
+                <td className="px-2 py-2 whitespace-nowrap">
+                  {o.vigencia !== "Sí" ? "" : vencida(o)
+                    ? <span className="text-red-600 font-medium">Vencida{o.fecha_vigencia ? " (" + proxima(d10(o.fecha_vigencia)) + ")" : ""}</span>
+                    : proxima(d10(o.fecha_vigencia))}
+                </td>
+              </tr>
+            ))}
+            {om.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">Todavía no hay oportunidades de mejora registradas.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 
 // Sube documentos Word históricos (cargados a mano en el pasado, antes de esta app)
 // para las NC migradas del Q.11 histórico, así el auditor tiene el mismo link 📄 que
@@ -872,10 +846,8 @@ function Q11Dashboard() {
       fetch(`${API_BASE}/nc/operarios`).then((r) => r.json()),
     ])
       .then(([nc, ops]) => {
-        // Las OM y los hallazgos nuevos tienen numeración propia (número interno >= 200000) y no integran las estadísticas de NC
-        const soloNC = nc.filter((n) => n.numero < 200000);
-        setRegistros(soloNC.map(mapNC));
-        setNcRaw(soloNC);
+        setRegistros(nc.map(mapNC));
+        setNcRaw(nc);
         setOperariosData(ops);
       })
       .catch((e) => setError("No se pudo conectar con la base de datos: " + e.message))
@@ -908,6 +880,9 @@ function Q11Dashboard() {
         <button type="button" onClick={() => setTab("exportQ11")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "exportQ11" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
           Exportar Q.11 (formato oficial)
         </button>
+        <button type="button" onClick={() => setTab("q25")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "q25" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
+          Q.25 · Oportunidades de mejora
+        </button>
         <button type="button" onClick={() => setTab("cargaHistorica")} className={`px-4 py-2 rounded-md text-sm font-medium border ${tab === "cargaHistorica" ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>
           Cargar Word históricos
         </button>
@@ -921,6 +896,8 @@ function Q11Dashboard() {
         <VistaOperarios ncRaw={ncRaw} operariosData={operariosData} />
       ) : tab === "exportQ11" ? (
         <VistaExportQ11 ncRaw={ncRaw} operariosData={operariosData} />
+      ) : tab === "q25" ? (
+        <VistaQ25 />
       ) : (
         <VistaCargaHistorica ncRaw={ncRaw} onSubido={recargarTodo} />
       )}

@@ -10,6 +10,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -168,11 +170,23 @@ const LOGO_SILVER_B64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAABgCAIAAADjKTx/AACyC0lEQVR
 // Excel con el rótulo de los documentos controlados de Silver:
 // logo | título | Fecha / Cód / Rev, y debajo la fila de encabezados y los datos.
 // columnas: [{ header, key, width, tipo: "fecha"|"texto"|"num", izq: true }]
-async function exportarExcelRotulado({ filas, columnas, hoja, archivo, titulo, cod, rev, fechaDoc }) {
+async function exportarExcelRotulado({ filas, columnas, hoja, archivo, titulo, cod, rev, fechaDoc, listas, filasExtra }) {
   const wb = new ExcelJS.Workbook();
+  wb.calcProperties = { fullCalcOnLoad: true };
   const ws = wb.addWorksheet(hoja, { views: [{ state: "frozen", ySplit: 3 }] });
   ws.columns = columnas.map((c) => ({ key: c.key, width: c.width || 14 }));
   const n = columnas.length;
+  // Hoja oculta "Listas": de ahí salen los desplegables (permite listas largas)
+  const rangos = {};
+  if (listas) {
+    const wl = wb.addWorksheet("Listas", { state: "hidden" });
+    Object.keys(listas).forEach((nombre, ci) => {
+      wl.getCell(1, ci + 1).value = nombre;
+      listas[nombre].forEach((v, ri) => { wl.getCell(ri + 2, ci + 1).value = v; });
+      const col = wl.getColumn(ci + 1).letter;
+      rangos[nombre] = `Listas!$${col}$2:$${col}$${listas[nombre].length + 1}`;
+    });
+  }
   const borde = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
   const gris = { type: "pattern", pattern: "solid", fgColor: { argb: "FFBFBFBF" } };
 
@@ -215,16 +229,28 @@ async function exportarExcelRotulado({ filas, columnas, hoja, archivo, titulo, c
     cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
   });
 
-  // Datos
-  filas.forEach((f, idx) => {
+  // Datos (más algunas filas vacías con los desplegables para sumar OM a mano)
+  const todas = filas.concat(Array.from({ length: filasExtra || 0 }, () => ({})));
+  todas.forEach((f, idx) => {
     const row = ws.getRow(4 + idx);
     columnas.forEach((c, i) => {
       const cell = row.getCell(i + 1);
       let v = f[c.key];
+      if (c.valid && rangos[c.valid]) {
+        cell.dataValidation = { type: "list", allowBlank: true, showErrorMessage: true, errorTitle: "Valor no válido", error: "Elegí un valor de la lista.", formulae: [rangos[c.valid]] };
+      }
+      if (c.formula) {
+        cell.value = { formula: c.formula(4 + idx), result: "" };
+        cell.numFmt = "dd/mm/yyyy";
+        cell.border = borde;
+        cell.font = { size: 10 };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+        return;
+      }
       if (c.tipo === "fecha") {
         const d = fechaADate(v);
         cell.value = d || (v || "");
-        if (d) cell.numFmt = "dd/mm/yyyy";
+        cell.numFmt = "dd/mm/yyyy";
       } else if (c.tipo === "num") {
         cell.value = v === "" || v == null ? "" : Number.isFinite(Number(v)) ? Number(v) : v;
       } else {
@@ -273,6 +299,89 @@ const COLUMNAS_Q11 = [
   { header: "CON DEVOLUCION", key: "CON DEVOLUCION", width: 14 },
   { header: "Raíz", key: "Raiz", width: 30, izq: true },
 ];
+
+
+// Personal de Silver (proponentes y responsables de implementación)
+const PERSONAS_SILVER = [
+  "Aranguren Diego M.", "Cardozo Walter F.", "Ferreyra Fernando O.", "Guillermo Ricardo M.", "Pulido Luis O.",
+  "Gil Gaston A.", "Altamirano Juan J.", "Navarro Hugo R.", "Rodriguez Ariel", "Luna Marcelo J.",
+  "Heredia Miguel A.", "Sanchez Walter F.", "Ortigoza Modesto", "Almiron Ricardo D.", "Benitez Hugo A.",
+  "Yorio Walter E.", "Irungaray Christian", "Ramirez Ruben D.", "Gorosito Juan J.", "Graniera Pablo",
+  "Martorelli Carlos", "Canaberro Mariano", "Pardo Maximiliano", "Ortiz Diego", "Ramirez Ignacio", "Ortigoza Ramon",
+];
+
+// Previsualización del Word guardado en R2 (se dibuja en pantalla, sin descargar)
+function VisorWord({ ncNumero, titulo, onCerrar }) {
+  const cont = React.useRef(null);
+  const [estado, setEstado] = useState("cargando");
+  const [msg, setMsg] = useState("");
+  const [blob, setBlob] = useState(null);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/nc/${ncNumero}/documento`);
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || `Error ${r.status}`);
+        }
+        const b = await r.blob();
+        if (!vivo) return;
+        setBlob(b);
+        if (!window.docx) throw new Error("No se pudo cargar el visor de Word");
+        await window.docx.renderAsync(b, cont.current, null, { inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true });
+        if (vivo) setEstado("ok");
+      } catch (e) {
+        if (vivo) { setEstado("error"); setMsg(e.message); }
+      }
+    })();
+    return () => { vivo = false; };
+  }, [ncNumero]);
+
+  function descargar() {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Q21_${titulo || ncNumero}.docx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" onClick={onCerrar}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200">
+          <p className="text-sm font-medium text-slate-800">Registro Q.21 — Nº {titulo}</p>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={descargar} disabled={!blob} className="px-3 py-1.5 rounded-md text-xs font-medium border border-slate-300 text-slate-700 disabled:opacity-40">Descargar .docx</button>
+            <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 text-white">Cerrar</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto bg-slate-100 p-3">
+          {estado === "cargando" && <p className="text-sm text-slate-500">Cargando documento…</p>}
+          {estado === "error" && <p className="text-sm text-red-600">No se pudo mostrar el documento: {msg}</p>}
+          <div ref={cont} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EnlaceWord({ ncNumero, etiqueta }) {
+  const [abierto, setAbierto] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setAbierto(true)} className="text-blue-600 hover:underline" title="Ver el registro Q.21 (Word)">
+        {etiqueta} 📄
+      </button>
+      {abierto && <VisorWord ncNumero={ncNumero} titulo={etiqueta} onCerrar={() => setAbierto(false)} />}
+    </>
+  );
+}
 
 function exportarExcel(filas, nombreHoja, nombreArchivo) {
   const ws = XLSX.utils.json_to_sheet(filas);
@@ -452,15 +561,7 @@ function VistaGeneral({ registros }) {
                 <tr key={r.numero} className="border-t border-slate-100">
                   <td className="px-3 py-1.5 font-medium text-slate-700">
                     {r.documentoGeneradoEn ? (
-                      <a
-                        href={`${API_BASE}/nc/${r.numero}/documento`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                        title="Ver registro Q.21 (Word) generado desde la app"
-                      >
-                        {r.numeroMostrado} 📄
-                      </a>
+                      <EnlaceWord ncNumero={r.numero} etiqueta={r.numeroMostrado} />
                     ) : (
                       r.numeroMostrado
                     )}
@@ -824,32 +925,63 @@ function VistaCargaOM({ onCambio }) {
   async function leerExcel(file) {
     const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const filas = XLSX.utils.sheet_to_json(ws, { defval: "", raw: false, dateNF: "dd/mm/yyyy" });
-    const tomar = (r, k) => String(r[k] ?? "").trim();
-    setFilasXls(filas
-      .filter((r) => COLS_PLANTILLA.some((c) => tomar(r, c)))
+    const matriz = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false, dateNF: "dd/mm/yyyy" });
+    const norm = (t) => String(t || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    // Encabezados reconocidos (plantilla o Excel exportado del Q.25 con rótulo)
+    const ALIAS = {
+      numero: ["nº om", "no om", "nº", "n°", "no", "numero", "n° om"],
+      fecha: ["fecha"],
+      producto: ["producto / proceso", "producto"],
+      descripcion: ["descripcion"],
+      origen: ["origen"],
+      proponente: ["proponente"],
+      responsable: ["responsable de implementacion", "responsable"],
+      prevista: ["fecha prevista", "fecha prevista de implementacion"],
+      beneficio: ["beneficio esperado", "beneficio"],
+      estado: ["estado"],
+      vigencia: ["vigencia"],
+      revision: ["ultima revision de vigencia", "fecha de vigencia", "fecha vigencia"],
+    };
+    let hdr = -1;
+    for (let i = 0; i < Math.min(matriz.length, 8); i++) {
+      const cels = matriz[i].map(norm);
+      if (cels.some((c) => ALIAS.numero.includes(c)) && cels.some((c) => c === "descripcion")) { hdr = i; break; }
+    }
+    if (hdr < 0) {
+      setFilasXls([{ id: 0, errores: ["encabezados"], estado_carga: "error", mensaje: "No encontré la fila de encabezados (Nº y Descripción)", datos: { numeroOriginal: "", fecha: "", descripcion: "", origen: "", responsable: "", estado: "" } }]);
+      return;
+    }
+    const idx = {};
+    matriz[hdr].map(norm).forEach((c, i) => {
+      Object.keys(ALIAS).forEach((k) => { if (idx[k] === undefined && ALIAS[k].includes(c)) idx[k] = i; });
+    });
+    const tomar = (r, k) => (idx[k] === undefined ? "" : String(r[idx[k]] ?? "").trim());
+    setFilasXls(matriz.slice(hdr + 1)
+      .filter((r) => tomar(r, "numero") || tomar(r, "descripcion"))
       .map((r, i) => {
         const errores = [];
-        const num = Number(tomar(r, "Nº OM"));
+        const num = Number(tomar(r, "numero"));
         if (!num) errores.push("falta el Nº");
-        if (!tomar(r, "Descripción")) errores.push("falta la descripción");
-        const fecha = fechaEntradaAISO(tomar(r, "Fecha"));
-        const prev = fechaEntradaAISO(tomar(r, "Fecha prevista"));
-        const rev = fechaEntradaAISO(tomar(r, "Última revisión de vigencia"));
+        if (!tomar(r, "descripcion")) errores.push("falta la descripción");
+        const fecha = fechaEntradaAISO(tomar(r, "fecha"));
+        const prev = fechaEntradaAISO(tomar(r, "prevista"));
+        const rev = fechaEntradaAISO(tomar(r, "revision"));
         if (fecha === null) errores.push("fecha inválida");
         if (prev === null) errores.push("fecha prevista inválida");
-        if (rev === null) errores.push("revisión inválida");
-        const origen = coincidirLista(tomar(r, "Origen"), ORIGENES_OM);
-        const estado = coincidirLista(tomar(r, "Estado"), ESTADOS_OM);
+        if (rev === null) errores.push("fecha de vigencia inválida");
+        const origen = coincidirLista(tomar(r, "origen"), ORIGENES_OM);
+        const estado = coincidirLista(tomar(r, "estado"), ESTADOS_OM);
+        const vigencia = coincidirLista(norm(tomar(r, "vigencia")) === "si" ? "Sí" : tomar(r, "vigencia"), ["Sí", "No"]);
         if (origen === null) errores.push("origen no válido");
         if (estado === null) errores.push("estado no válido");
+        if (vigencia === null) errores.push("vigencia no válida");
         return {
           id: i, errores, estado_carga: errores.length ? "error" : "pendiente", mensaje: errores.join(", "),
           datos: {
-            numeroOriginal: num, fecha: fecha || "", producto: tomar(r, "Producto / proceso"), descripcion: tomar(r, "Descripción"),
-            origen: origen || "", proponente: tomar(r, "Proponente"), responsable: tomar(r, "Responsable de implementación"),
-            fechaPrevista: prev || "", beneficioEsperado: tomar(r, "Beneficio esperado"), estado: estado || "Pendiente",
-            vigencia: "Sí", fechaVigencia: rev || "", actualizar: true,
+            numeroOriginal: num, fecha: fecha || "", producto: tomar(r, "producto"), descripcion: tomar(r, "descripcion"),
+            origen: origen || "", proponente: tomar(r, "proponente"), responsable: tomar(r, "responsable"),
+            fechaPrevista: prev || "", beneficioEsperado: tomar(r, "beneficio"), estado: estado || "",
+            vigencia: vigencia || "", fechaVigencia: rev || "", actualizar: true,
           },
         };
       }));
@@ -1085,20 +1217,32 @@ function detectarNumeroDesdeNombre(nombreArchivo) {
 function VistaQ25() {
   const [om, setOm] = useState(null);
   const [error, setError] = useState(null);
-  useEffect(() => {
-    fetch(`${API_BASE}/om`).then((r) => r.json()).then((d) => {
+  const [editando, setEditando] = useState(null);
+  const [f, setF] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
+  const [filtroEstado, setFiltroEstado] = useState("");
+  const [soloVencidas, setSoloVencidas] = useState(false);
+
+  async function cargar() {
+    try {
+      const r = await fetch(`${API_BASE}/om`);
+      const d = await r.json();
       if (!Array.isArray(d)) throw new Error(d.error || "Respuesta inesperada");
       setOm(d);
-    }).catch((e) => setError(e.message));
-  }, []);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  useEffect(() => { cargar(); }, []);
 
   const d10 = (v) => (v ? String(v).slice(0, 10) : "");
   const hoy = new Date().toISOString().slice(0, 10);
   const proxima = (iso) => {
     if (!iso) return "";
-    const f = new Date(iso.slice(0, 10) + "T00:00:00Z");
-    f.setUTCMonth(f.getUTCMonth() + 6);
-    return f.toISOString().slice(0, 10);
+    const fch = new Date(iso.slice(0, 10) + "T00:00:00Z");
+    fch.setUTCMonth(fch.getUTCMonth() + 6);
+    return fch.toISOString().slice(0, 10);
   };
   const vencida = (o) => o.vigencia === "Sí" && (!o.fecha_vigencia || proxima(d10(o.fecha_vigencia)) < hoy);
   const num = (o) => o.numero_original || o.nc_numero;
@@ -1106,33 +1250,72 @@ function VistaQ25() {
   if (error) return <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md p-3">No se pudo cargar la Q.25: {error}</div>;
   if (!om) return <p className="text-sm text-slate-400">Cargando Q.25...</p>;
 
-  const cuenta = (f) => om.filter(f).length;
+  const cuenta = (fn) => om.filter(fn).length;
   const origenes = [...new Set(om.map((o) => o.origen || "Sin completar"))];
 
+  const visibles = om.filter((o) => {
+    if (filtroEstado === "__sin" && o.estado) return false;
+    if (filtroEstado && filtroEstado !== "__sin" && o.estado !== filtroEstado) return false;
+    if (soloVencidas && !vencida(o)) return false;
+    const q = busqueda.trim().toLowerCase();
+    if (q && !`${num(o)} ${o.descripcion || ""} ${o.proponente || ""} ${o.responsable || ""}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  function abrir(o) {
+    setEditando(o.nc_numero);
+    setF({
+      fecha: d10(o.fecha_produccion), descripcion: o.descripcion || "", origen: o.origen || "", proponente: o.proponente || "",
+      responsable: o.responsable || "", fechaPrevista: d10(o.fecha_prevista), beneficioEsperado: o.beneficio_esperado || "",
+      estado: o.estado || "", vigencia: o.vigencia || "Sí", fechaVigencia: d10(o.fecha_vigencia),
+    });
+  }
+  const upd = (k, v) => setF((x) => ({ ...x, [k]: v }));
+
+  async function guardar() {
+    setGuardando(true);
+    try {
+      const res = await fetch(`${API_BASE}/om/${editando}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(f),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      setEditando(null);
+      await cargar();
+    } catch (e) {
+      setError("No se pudo guardar: " + e.message);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
   function exportar() {
-    const filas = om.map((o) => ({
+    const filas = om.slice().sort((a, b) => num(a) - num(b)).map((o) => ({
       f: fmtFecha(o.fecha_produccion), n: num(o), origen: o.origen || "", prop: o.proponente || "",
       desc: o.descripcion || "", resp: o.responsable || "", prev: fmtFecha(o.fecha_prevista),
       ben: o.beneficio_esperado || "", est: o.estado || "", vig: o.vigencia || "",
       fvig: fmtFecha(o.fecha_vigencia),
-      prox: o.vigencia === "Sí" && o.fecha_vigencia ? fmtFecha(proxima(d10(o.fecha_vigencia))) : "",
     }));
-        exportarExcelRotulado({
+    exportarExcelRotulado({
       filas, hoja: "Q.25 Rev 0", archivo: "Q25_Registro_Oportunidades_Mejora_Rev0.xlsx",
       titulo: "Registro de oportunidades de mejora", cod: "Q.25", rev: "0", fechaDoc: Q25_FECHA_DOC,
+      filasExtra: 30,
+      listas: { origen: ORIGENES_OM, estado: ESTADOS_OM, vigencia: ["Sí", "No"], personas: PERSONAS_SILVER },
       columnas: [
         { header: "Fecha", key: "f", width: 12, tipo: "fecha" },
         { header: "Nº", key: "n", width: 8, tipo: "num" },
-        { header: "Origen", key: "origen", width: 22 },
-        { header: "Proponente", key: "prop", width: 18 },
+        { header: "Origen", key: "origen", width: 22, valid: "origen" },
+        { header: "Proponente", key: "prop", width: 20, valid: "personas" },
         { header: "Descripción", key: "desc", width: 50, izq: true },
-        { header: "Responsable de implementación", key: "resp", width: 20 },
+        { header: "Responsable de implementación", key: "resp", width: 22, valid: "personas" },
         { header: "Fecha prevista de implementación", key: "prev", width: 16, tipo: "fecha" },
         { header: "Beneficio esperado", key: "ben", width: 40, izq: true },
-        { header: "Estado", key: "est", width: 13 },
-        { header: "Vigencia", key: "vig", width: 10 },
+        { header: "Estado", key: "est", width: 13, valid: "estado" },
+        { header: "Vigencia", key: "vig", width: 10, valid: "vigencia" },
         { header: "Fecha de vigencia", key: "fvig", width: 14, tipo: "fecha" },
-        { header: "Próxima revisión", key: "prox", width: 14, tipo: "fecha" },
+        { header: "Próxima revisión", key: "prox", width: 14, formula: (r) => `IF(AND(J${r}="Sí",K${r}<>""),EDATE(K${r},6),"")` },
       ],
     });
   }
@@ -1143,6 +1326,10 @@ function VistaQ25() {
       <div className={`text-2xl font-semibold ${c || "text-slate-800"}`}>{v}</div>
     </div>
   );
+  const inp = "w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm";
+  const lbl = "block text-xs font-medium text-slate-600 mb-1";
+  // Proponente/responsable: lista de Silver (y si la OM trae otro nombre, se conserva)
+  const opcionesPersonas = (actual) => (actual && !PERSONAS_SILVER.includes(actual) ? [actual, ...PERSONAS_SILVER] : PERSONAS_SILVER);
 
   return (
     <div>
@@ -1161,37 +1348,99 @@ function VistaQ25() {
         Por origen: {origenes.map((g) => `${g}: ${cuenta((o) => (o.origen || "Sin completar") === g)}`).join(" · ") || "—"}
         {" · "}Vigentes: {cuenta((o) => o.vigencia === "Sí")}
       </div>
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <input type="text" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por Nº, descripción o persona…" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm w-72" />
+        <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+          <option value="">Todos los estados</option>
+          {ESTADOS_OM.map((e) => <option key={e} value={e}>{e}</option>)}
+          <option value="__sin">Sin estado</option>
+        </select>
+        <label className="text-xs text-slate-600 flex items-center gap-1">
+          <input type="checkbox" checked={soloVencidas} onChange={(e) => setSoloVencidas(e.target.checked)} /> Solo revisión vencida
+        </label>
+        <span className="text-xs text-slate-400 ml-auto">{visibles.length} de {om.length}</span>
+      </div>
+
       <div className="overflow-x-auto bg-white border border-slate-200 rounded-lg">
         <table className="min-w-full text-xs">
           <thead className="bg-slate-50 text-slate-600">
-            <tr>{["Fecha","Nº","Origen","Proponente","Descripción","Responsable","Prevista","Beneficio","Estado","Vigencia","Fecha vigencia","Próxima revisión"].map((h) => <th key={h} className="text-left px-2 py-2 font-medium">{h}</th>)}</tr>
+            <tr>{["Fecha","Nº","Origen","Proponente","Descripción","Responsable","Prevista","Beneficio","Estado","Vigencia","Fecha vigencia","Próxima revisión",""].map((h) => <th key={h} className="text-left px-2 py-2 font-medium">{h}</th>)}</tr>
           </thead>
           <tbody>
-            {om.map((o) => (
-              <tr key={o.nc_numero} className="border-t border-slate-100 align-top">
-                <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_produccion)}</td>
-                <td className="px-2 py-2 whitespace-nowrap">
-                  {o.documento_generado_en
-                    ? <a className="text-blue-700 underline" href={`${API_BASE}/nc/${o.nc_numero}/documento`} target="_blank" rel="noreferrer">📄 {num(o)}</a>
-                    : num(o)}
-                </td>
-                <td className="px-2 py-2">{o.origen || <span className="text-slate-400">—</span>}</td>
-                <td className="px-2 py-2">{o.proponente || ""}</td>
-                <td className="px-2 py-2 max-w-xs">{o.descripcion}</td>
-                <td className="px-2 py-2">{o.responsable || ""}</td>
-                <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_prevista)}</td>
-                <td className="px-2 py-2 max-w-xs">{o.beneficio_esperado || ""}</td>
-                <td className="px-2 py-2">{o.estado || <span className="text-slate-400">—</span>}</td>
-                <td className="px-2 py-2">{o.vigencia || ""}</td>
-                <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_vigencia)}</td>
-                <td className="px-2 py-2 whitespace-nowrap">
-                  {o.vigencia !== "Sí" ? "" : vencida(o)
-                    ? <span className="text-red-600 font-medium">Vencida{o.fecha_vigencia ? " (" + fmtFecha(proxima(d10(o.fecha_vigencia))) + ")" : ""}</span>
-                    : fmtFecha(proxima(d10(o.fecha_vigencia)))}
-                </td>
-              </tr>
+            {visibles.map((o) => (
+              <React.Fragment key={o.nc_numero}>
+                <tr className="border-t border-slate-100 align-top">
+                  <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_produccion)}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    {o.documento_generado_en ? <EnlaceWord ncNumero={o.nc_numero} etiqueta={String(num(o))} /> : num(o)}
+                  </td>
+                  <td className="px-2 py-2">{o.origen || <span className="text-slate-400">—</span>}</td>
+                  <td className="px-2 py-2">{o.proponente || ""}</td>
+                  <td className="px-2 py-2 max-w-xs">{o.descripcion}</td>
+                  <td className="px-2 py-2">{o.responsable || ""}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_prevista)}</td>
+                  <td className="px-2 py-2 max-w-xs">{o.beneficio_esperado || ""}</td>
+                  <td className="px-2 py-2">{o.estado || <span className="text-slate-400">—</span>}</td>
+                  <td className="px-2 py-2">{o.vigencia || ""}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_vigencia)}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    {o.vigencia !== "Sí" ? "" : vencida(o)
+                      ? <span className="text-red-600 font-medium">Vencida{o.fecha_vigencia ? " (" + fmtFecha(proxima(d10(o.fecha_vigencia))) + ")" : ""}</span>
+                      : fmtFecha(proxima(d10(o.fecha_vigencia)))}
+                  </td>
+                  <td className="px-2 py-2">
+                    <button type="button" onClick={() => (editando === o.nc_numero ? setEditando(null) : abrir(o))} className="text-blue-600 hover:underline">
+                      {editando === o.nc_numero ? "Cerrar" : "Editar"}
+                    </button>
+                  </td>
+                </tr>
+                {editando === o.nc_numero && f && (
+                  <tr className="bg-slate-50">
+                    <td colSpan={13} className="px-3 py-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div><label className={lbl}>Fecha de la OM</label><input type="date" value={f.fecha} onChange={(e) => upd("fecha", e.target.value)} className={inp} /></div>
+                        <div><label className={lbl}>Origen</label>
+                          <select value={f.origen} onChange={(e) => upd("origen", e.target.value)} className={inp}>
+                            <option value="">Seleccionar</option>{ORIGENES_OM.map((x) => <option key={x} value={x}>{x}</option>)}
+                          </select></div>
+                        <div><label className={lbl}>Estado</label>
+                          <select value={f.estado} onChange={(e) => upd("estado", e.target.value)} className={inp}>
+                            <option value="">Seleccionar</option>{ESTADOS_OM.map((x) => <option key={x} value={x}>{x}</option>)}
+                          </select></div>
+                        <div><label className={lbl}>Proponente</label>
+                          <select value={f.proponente} onChange={(e) => upd("proponente", e.target.value)} className={inp}>
+                            <option value="">Seleccionar</option>{opcionesPersonas(f.proponente).map((x) => <option key={x} value={x}>{x}</option>)}
+                          </select></div>
+                        <div><label className={lbl}>Responsable de implementación</label>
+                          <select value={f.responsable} onChange={(e) => upd("responsable", e.target.value)} className={inp}>
+                            <option value="">Seleccionar</option>{opcionesPersonas(f.responsable).map((x) => <option key={x} value={x}>{x}</option>)}
+                          </select></div>
+                        <div><label className={lbl}>Fecha prevista de implementación</label><input type="date" value={f.fechaPrevista} onChange={(e) => upd("fechaPrevista", e.target.value)} className={inp} /></div>
+                        <div><label className={lbl}>Vigencia</label>
+                          <select value={f.vigencia} onChange={(e) => upd("vigencia", e.target.value)} className={inp}>
+                            <option value="Sí">Sí</option><option value="No">No</option>
+                          </select></div>
+                        <div><label className={lbl}>Fecha de vigencia (última revisión)</label>
+                          <div className="flex gap-2">
+                            <input type="date" value={f.fechaVigencia} onChange={(e) => upd("fechaVigencia", e.target.value)} className={inp} />
+                            <button type="button" onClick={() => { upd("vigencia", "Sí"); upd("fechaVigencia", hoy); }} className="px-2 text-xs rounded-md border border-slate-300 whitespace-nowrap">Revisada hoy</button>
+                          </div></div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                        <div><label className={lbl}>Descripción</label><textarea rows={2} value={f.descripcion} onChange={(e) => upd("descripcion", e.target.value)} className={inp} /></div>
+                        <div><label className={lbl}>Beneficio esperado</label><textarea rows={2} value={f.beneficioEsperado} onChange={(e) => upd("beneficioEsperado", e.target.value)} className={inp} /></div>
+                      </div>
+                      <div className="flex gap-2 mt-3">
+                        <button type="button" disabled={guardando} onClick={guardar} className="px-4 py-2 rounded-md text-sm font-medium bg-slate-800 text-white disabled:opacity-50">{guardando ? "Guardando…" : "Guardar"}</button>
+                        <button type="button" onClick={() => setEditando(null)} className="px-4 py-2 rounded-md text-sm border border-slate-300 text-slate-700">Cancelar</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             ))}
-            {om.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">Todavía no hay oportunidades de mejora registradas.</td></tr>}
+            {visibles.length === 0 && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">No hay oportunidades de mejora con ese filtro.</td></tr>}
           </tbody>
         </table>
       </div>

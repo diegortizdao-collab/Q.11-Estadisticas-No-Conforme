@@ -1588,10 +1588,17 @@ function Q11Dashboard() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
 
+  // Si el Worker responde un error (p. ej. sin conexión a la base), muestra su mensaje en vez de fallar con 'nc.map is not a function'
+  async function leerLista(r) {
+    const d = await r.json().catch(() => null);
+    if (!r.ok || !Array.isArray(d)) throw new Error((d && d.error) || `El servidor respondió ${r.status}`);
+    return d;
+  }
+
   function recargarTodo() {
     return Promise.all([
-      fetch(`${API_BASE}/nc`).then((r) => r.json()),
-      fetch(`${API_BASE}/nc/operarios`).then((r) => r.json()),
+      fetch(`${API_BASE}/nc`).then(leerLista),
+      fetch(`${API_BASE}/nc/operarios`).then(leerLista),
     ])
       .then(([nc, ops]) => {
         setRegistros(nc.map(mapNC));

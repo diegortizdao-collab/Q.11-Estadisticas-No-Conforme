@@ -941,14 +941,14 @@ function combinarOperarios(ncRaw, operariosData) {
 function VistaOperarios({ ncRaw, operariosData }) {
   const combinado = useMemo(() => combinarOperarios(ncRaw, operariosData), [ncRaw, operariosData]);
   const anios = useMemo(() => [...new Set(combinado.map((r) => parseFechaParts(r.fecha_produccion).anio).filter(Boolean))].sort((a, b) => b - a), [combinado]);
-  const [anioSel, setAnioSel] = useState(null);
-  const [mesSel, setMesSel] = useState(null);
+  const [anioSel, setAnioSel] = useState("");
+  const [mesSel, setMesSel] = useState("");
 
   const filtrados = useMemo(() => {
     return combinado.filter((r) => {
       const { anio, mes } = parseFechaParts(r.fecha_produccion);
-      if (anioSel && anio !== anioSel) return false;
-      if (mesSel && mes !== mesSel) return false;
+      if (anioSel && anio !== Number(anioSel)) return false;
+      if (mesSel && mes !== Number(mesSel)) return false;
       return true;
     });
   }, [combinado, anioSel, mesSel]);
@@ -971,41 +971,68 @@ function VistaOperarios({ ncRaw, operariosData }) {
       .sort((a, b) => b.cantidad - a.cantidad);
   }, [filtrados]);
 
+  const totalNC = new Set(filtrados.map((r) => r.nc_numero)).size;
+  const top = porOperario[0];
+  const topN = porOperario.slice(0, 10).map((d) => ({ label: d.operario, value: d.cantidad }));
+  const resto = porOperario.slice(6).reduce((s2, d) => s2 + d.cantidad, 0);
+  const tortaDatos = [...porOperario.slice(0, 6).map((d) => ({ label: d.operario, value: d.cantidad })), ...(resto ? [{ label: "Resto", value: resto, color: "#94a3b8" }] : [])];
+  const porMesOp = (() => {
+    const c = Array(12).fill(0);
+    const vistos = new Set();
+    filtrados.forEach((r) => { const { mes } = parseFechaParts(r.fecha_produccion); const k = r.nc_numero + "-" + mes; if (mes && !vistos.has(k)) { vistos.add(k); c[mes - 1] += 1; } });
+    return c.map((value, i) => ({ label: MESES[i], value }));
+  })();
+  const selCls = "border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-300";
   return (
     <div>
-      <div className="bg-white rounded-lg border border-slate-200 p-4 mb-6 space-y-4">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 mb-5 space-y-3">
         <p className="text-xs text-slate-500">
           Para RRHH: cuántas NC tuvo cada operario en el período elegido. Cada NC cuenta una sola vez por operario, aunque haya afectado varios productos.
         </p>
-        <div>
-          <p className="text-xs font-medium text-slate-500 mb-2">Año</p>
-          <div className="flex flex-wrap gap-2">
-            <Chip label="Todos" active={!anioSel} onClick={() => setAnioSel(null)} />
-            {anios.map((a) => <Chip key={a} label={a} active={anioSel === a} onClick={() => setAnioSel(anioSel === a ? null : a)} />)}
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">📅 Año</p>
+            <select value={anioSel} onChange={(e) => setAnioSel(e.target.value)} className={selCls}>
+              <option value="">Todos los años</option>
+              {anios.map((a3) => <option key={a3} value={a3}>{a3}</option>)}
+            </select>
           </div>
-        </div>
-        <div>
-          <p className="text-xs font-medium text-slate-500 mb-2">Mes</p>
-          <div className="flex flex-wrap gap-2">
-            <Chip label="Todos" active={!mesSel} onClick={() => setMesSel(null)} />
-            {MESES.map((m, i) => <Chip key={m} label={m} active={mesSel === i + 1} onClick={() => setMesSel(mesSel === i + 1 ? null : i + 1)} />)}
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">🗓️ Mes</p>
+            <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} className={selCls}>
+              <option value="">Todos los meses</option>
+              {MESES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
           </div>
+          <button
+            type="button"
+            onClick={() => exportarExcel(
+              porOperario.map((r) => ({ Operario: r.operario, "Cantidad de NC": r.cantidad })),
+              "Operarios", `Operarios_NC_${new Date().toISOString().slice(0, 10)}.xlsx`
+            )}
+            className="ml-auto text-white text-xs font-bold rounded-lg px-4 py-2 shadow hover:opacity-90" style={{ background: "linear-gradient(135deg,#0ea5e9,#6366f1)" }}
+          >
+            ⬇ Exportar a Excel
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => exportarExcel(
-            porOperario.map((r) => ({ Operario: r.operario, "Cantidad de NC": r.cantidad })),
-            "Operarios", `Operarios_NC_${new Date().toISOString().slice(0, 10)}.xlsx`
-          )}
-          className="bg-slate-800 text-white text-xs font-medium rounded-md px-4 py-2 hover:bg-slate-700"
-        >
-          Exportar a Excel
-        </button>
       </div>
 
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-5">
+        <Kpi label="Operarios con NC" value={porOperario.length} colors={["#6366f1", "#3b82f6"]} />
+        <Kpi label="NC en el período" value={totalNC} colors={["#e11d48", "#f97316"]} />
+        <Kpi label="Operario con más NC" value={top ? top.cantidad : 0} sub={top ? top.operario : "—"} colors={["#0d9488", "#10b981"]} />
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4 mb-5">
+        <Tarjeta titulo="🏆 Top 10 operarios" sub="Barras">{topN.length ? <BarrasH data={topN} /> : <SinDatos />}</Tarjeta>
+        <Tarjeta titulo="🍩 Participación en las NC" sub="Dona (top 6 + resto)"><Torta donut data={tortaDatos} /></Tarjeta>
+        <Tarjeta titulo="📊 NC por mes" sub="Columnas">{totalNC ? <Columnas data={porMesOp} /> : <SinDatos />}</Tarjeta>
+        <Tarjeta titulo="🕸️ Radar top operarios" sub="Radar"><Radar data={topN.slice(0, 8)} /></Tarjeta>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="p-4 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-800">Operarios con NC en el período ({porOperario.length})</h3>
+          <h3 className="text-sm font-bold text-slate-800">Operarios con NC en el período ({porOperario.length})</h3>
         </div>
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-500 text-xs">
@@ -1015,10 +1042,12 @@ function VistaOperarios({ ncRaw, operariosData }) {
             </tr>
           </thead>
           <tbody>
-            {porOperario.map((r) => (
+            {porOperario.map((r, i) => (
               <tr key={r.operario} className="border-t border-slate-100">
                 <td className="px-4 py-2 text-slate-700">{r.operario}</td>
-                <td className="px-4 py-2 text-slate-600">{r.cantidad}</td>
+                <td className="px-4 py-2">
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold" style={{ background: PALETA[i % PALETA.length] + "22", color: PALETA[i % PALETA.length] }}>{r.cantidad}</span>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1672,15 +1701,19 @@ function VistaQ25() {
         <button type="button" onClick={exportar} className="px-3 py-2 rounded-md text-sm font-medium bg-slate-800 text-white">Exportar a Excel</button>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
-        {kpi("Total OM", om.length)}
-        {kpi("Implementadas", cuenta((o) => o.estado === "Implementado"), "text-green-700")}
-        {kpi("En proceso", cuenta((o) => o.estado === "En proceso"), "text-amber-600")}
-        {kpi("Pendientes", cuenta((o) => o.estado === "Pendiente"))}
-        {kpi("Revisiones vencidas", cuenta(vencida), "text-red-600")}
+        <Kpi label="Total OM" value={om.length} colors={["#6366f1", "#3b82f6"]} />
+        <Kpi label="Implementadas" value={cuenta((o) => o.estado === "Implementado")} colors={["#0d9488", "#10b981"]} />
+        <Kpi label="En proceso" value={cuenta((o) => o.estado === "En proceso")} colors={["#f59e0b", "#f97316"]} />
+        <Kpi label="Pendientes" value={cuenta((o) => o.estado === "Pendiente")} colors={["#64748b", "#94a3b8"]} />
+        <Kpi label="Revisiones vencidas" value={cuenta(vencida)} colors={["#e11d48", "#f43f5e"]} />
       </div>
-      <div className="text-xs text-slate-600 mb-3">
-        Por origen: {origenes.map((g) => `${g}: ${cuenta((o) => (o.origen || "Sin completar") === g)}`).join(" · ") || "—"}
-        {" · "}Vigentes: {cuenta((o) => o.vigencia === "Sí")}
+      <div className="grid md:grid-cols-2 gap-4 mb-4">
+        <Tarjeta titulo="🍩 Estado de las OM" sub="Dona">
+          <Torta donut data={[...ESTADOS_OM.map((e, i) => ({ label: e, value: cuenta((o) => o.estado === e), color: ["#10b981", "#f59e0b", "#64748b", "#6366f1", "#ec4899"][i % 5] })), { label: "Sin estado", value: cuenta((o) => !o.estado), color: "#cbd5e1" }].filter((d) => d.value > 0)} />
+        </Tarjeta>
+        <Tarjeta titulo="📊 OM por origen" sub={`Vigentes: ${cuenta((o) => o.vigencia === "Sí")}`}>
+          <BarrasH data={origenes.map((g) => ({ label: g, value: cuenta((o) => (o.origen || "Sin completar") === g) })).sort((x, y) => y.value - x.value)} />
+        </Tarjeta>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -1715,7 +1748,7 @@ function VistaQ25() {
                   <td className="px-2 py-2">{o.responsable || ""}</td>
                   <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_prevista)}</td>
                   <td className="px-2 py-2 max-w-xs">{o.beneficio_esperado || ""}</td>
-                  <td className="px-2 py-2">{o.estado || <span className="text-slate-400">—</span>}</td>
+                  <td className="px-2 py-2">{o.estado ? <span className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={{ background: ({ Implementado: "#10b981", "En proceso": "#f59e0b", Pendiente: "#64748b" }[o.estado] || "#6366f1") + "22", color: ({ Implementado: "#059669", "En proceso": "#d97706", Pendiente: "#475569" }[o.estado] || "#4f46e5") }}>{o.estado}</span> : <span className="text-slate-400">—</span>}</td>
                   <td className="px-2 py-2">{o.vigencia || ""}</td>
                   <td className="px-2 py-2 whitespace-nowrap">{fmtFecha(o.fecha_vigencia)}</td>
                   <td className="px-2 py-2 whitespace-nowrap">

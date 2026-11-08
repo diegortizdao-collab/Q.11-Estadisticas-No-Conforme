@@ -111,6 +111,10 @@ function mapNC(row) {
     producto: row.producto || "",
     cliente: row.cliente || "",
     devolucion: row.con_devolucion ? "SI" : "NO",
+    conDevolucion: row.con_devolucion === true,
+    clasificacion: row.clasificacion || "",
+    categoria: row.categoria || "Otros",
+    tipoInforme: (row.clasificacion === "Hallazgos de Auditoría" || row.tipo === "Hallazgo de auditoría") ? "Hallazgo de auditoría" : (row.tipo || "No conformidad"),
     estado: row.estado || "",
     documentoGeneradoEn: row.documento_generado_en || null,
   };
@@ -498,156 +502,379 @@ function exportarExcel(filas, nombreHoja, nombreArchivo) {
   XLSX.writeFile(wb, nombreArchivo);
 }
 
+// ======================= Dashboard (vista general) rediseñado =======================
+const PALETA = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#06b6d4", "#ec4899", "#8b5cf6", "#84cc16", "#f97316", "#14b8a6", "#3b82f6", "#a855f7"];
+const BTN_TIPO = {
+  "No conformidad": ["#6366f1", "#3b82f6"],
+  "Hallazgo de auditoría": ["#f59e0b", "#f97316"],
+  "Op. de mejora": ["#10b981", "#14b8a6"],
+};
+const BTN_CLAS = {
+  "Defectos x Control de Calidad": ["#0d9488", "#10b981"],
+  "Reclamos de Clientes": ["#e11d48", "#f43f5e"],
+  "Proveedores": ["#7c3aed", "#a855f7"],
+};
+const CATEGORIAS = ["Producto", "Proceso", "Proveedor", "Cliente", "Otros"];
+const BTN_CAT = { Producto: "#0ea5e9", Proceso: "#f59e0b", Proveedor: "#8b5cf6", Cliente: "#ec4899", Otros: "#64748b" };
+
+function SegBtn({ label, count, colors, active, onClick, small }) {
+  const [c1, c2] = Array.isArray(colors) ? colors : [colors, colors];
+  const st = active
+    ? { background: `linear-gradient(135deg, ${c1}, ${c2})`, color: "#fff", borderColor: "transparent", boxShadow: `0 4px 12px ${c1}55` }
+    : { background: c1 + "14", color: c1, borderColor: c1 + "55" };
+  return (
+    <button type="button" onClick={onClick} style={st}
+      className={`${small ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm"} rounded-xl border font-semibold transition hover:-translate-y-0.5 flex items-center gap-2`}>
+      <span>{label}</span>
+      {count != null && (
+        <span className="rounded-full px-1.5 text-[10px] font-bold" style={{ background: active ? "#ffffff33" : c1 + "22" }}>{count}</span>
+      )}
+    </button>
+  );
+}
+
+function Tarjeta({ titulo, sub, children, cls = "" }) {
+  return (
+    <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-4 ${cls}`}>
+      <h3 className="text-sm font-bold text-slate-800">{titulo}</h3>
+      {sub && <p className="text-[11px] text-slate-400 mb-2">{sub}</p>}
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+}
+const SinDatos = () => <p className="text-xs text-slate-400 py-8 text-center">Sin datos en este filtro</p>;
+
+function Kpi({ label, value, sub, colors }) {
+  return (
+    <div className="rounded-2xl p-4 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${colors[0]}, ${colors[1]})` }}>
+      <p className="text-[11px] font-medium opacity-90">{label}</p>
+      <p className="text-3xl font-extrabold mt-1 leading-tight break-words">{value}</p>
+      {sub && <p className="text-[11px] opacity-80 mt-1">{sub}</p>}
+    </div>
+  );
+}
+
+function polar(cx, cy, r, a) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; }
+function sector(cx, cy, r, a0, a1) {
+  if (a1 - a0 >= Math.PI * 2 - 0.001) return `M${cx - r},${cy} A${r},${r} 0 1 1 ${cx + r},${cy} A${r},${r} 0 1 1 ${cx - r},${cy} Z`;
+  const [x0, y0] = polar(cx, cy, r, a0), [x1, y1] = polar(cx, cy, r, a1);
+  return `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`;
+}
+function Leyenda({ data, total }) {
+  return (
+    <div className="space-y-1 min-w-0">
+      {data.map((d, i) => (
+        <div key={d.label} className="flex items-center gap-2 text-[11px]">
+          <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: d.color || PALETA[i % PALETA.length] }} />
+          <span className="text-slate-600 truncate" title={d.label}>{d.label}</span>
+          <span className="ml-auto font-bold text-slate-700">{d.value}</span>
+          <span className="text-slate-400 w-9 text-right">{total ? Math.round((d.value / total) * 100) : 0}%</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Dona (anillo) o torta 3D según "tres_d"
+function Torta({ data, donut, tres_d }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (!total) return <SinDatos />;
+  const items = data.map((d, i) => ({ ...d, color: d.color || PALETA[i % PALETA.length] }));
+  const R = 80, cx = 100, cy = tres_d ? 78 : 100;
+  let a = -Math.PI / 2;
+  const slices = items.map((d) => {
+    const ang = (d.value / total) * Math.PI * 2;
+    const s = { ...d, a0: a, a1: a + (ang >= Math.PI * 2 ? Math.PI * 2 - 0.0001 : ang) };
+    a += ang;
+    return s;
+  });
+  const capa = (dy, oscuro, key) => (
+    <g key={key} transform={`translate(0,${dy})`}>
+      {slices.map((s) => <path key={s.label} d={sector(cx, cy, R, s.a0, s.a1)} fill={s.color} stroke="#fff" strokeWidth="1" />)}
+      {oscuro && slices.map((s) => <path key={"o" + s.label} d={sector(cx, cy, R, s.a0, s.a1)} fill="#000" opacity="0.28" />)}
+    </g>
+  );
+  return (
+    <div className="flex items-center gap-4 flex-wrap">
+      <svg viewBox="0 0 200 200" className="w-44 h-44 shrink-0">
+        {tres_d ? (
+          <g transform={`translate(0,${cy}) scale(1,0.6) translate(0,${-cy})`}>
+            {[26, 20, 14, 8].map((dy) => capa(dy / 0.6, true, "e" + dy))}
+            {capa(0, false, "top")}
+          </g>
+        ) : (
+          <>
+            {slices.map((s) => (
+              <path key={s.label} d={sector(cx, cy, R, s.a0, s.a1)} fill={s.color} stroke="#fff" strokeWidth="2"><title>{`${s.label}: ${s.value}`}</title></path>
+            ))}
+            {donut && <circle cx={cx} cy={cy} r={R * 0.55} fill="#fff" />}
+            {donut && <text x={cx} y={cy - 2} textAnchor="middle" className="fill-slate-800" style={{ fontSize: 22, fontWeight: 800 }}>{total}</text>}
+            {donut && <text x={cx} y={cy + 14} textAnchor="middle" className="fill-slate-400" style={{ fontSize: 9 }}>total</text>}
+          </>
+        )}
+      </svg>
+      <div className="flex-1 min-w-[150px]"><Leyenda data={items} total={total} /></div>
+    </div>
+  );
+}
+
+// Columnas verticales (cada una con su color); 3D opcional
+function Columnas({ data, tres_d, colorFijo }) {
+  const max = Math.max(...data.map((d) => d.value), 1);
+  const W = 420, H = 190, pad = 24, base = H - 24, alto = base - 22;
+  const n = data.length, paso = (W - pad * 2) / n, bw = Math.min(34, paso * 0.62), dep = tres_d ? Math.min(10, bw / 3) : 0;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
+      <defs>
+        {data.map((d, i) => {
+          const c = colorFijo || PALETA[i % PALETA.length];
+          return (
+            <linearGradient key={i} id={`gc${tres_d ? "3" : "2"}${i}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor={c} /><stop offset="1" stopColor={c} stopOpacity="0.62" />
+            </linearGradient>
+          );
+        })}
+      </defs>
+      {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={pad} x2={W - pad} y1={base - alto * f} y2={base - alto * f} stroke="#e2e8f0" strokeDasharray="3 3" />)}
+      <line x1={pad} x2={W - pad} y1={base} y2={base} stroke="#cbd5e1" />
+      {data.map((d, i) => {
+        const c = colorFijo || PALETA[i % PALETA.length];
+        const h = d.value > 0 ? Math.max(3, (d.value / max) * alto) : 0;
+        const x = pad + paso * i + (paso - bw) / 2 - dep / 2, y = base - h;
+        return (
+          <g key={d.label}>
+            <title>{`${d.label}: ${d.value}`}</title>
+            {tres_d && h > 0 && <>
+              <polygon points={`${x},${y} ${x + dep},${y - dep} ${x + bw + dep},${y - dep} ${x + bw},${y}`} fill={c} opacity="0.55" style={{ filter: "brightness(1.25)" }} />
+              <polygon points={`${x + bw},${y} ${x + bw + dep},${y - dep} ${x + bw + dep},${base - dep} ${x + bw},${base}`} fill={c} style={{ filter: "brightness(0.7)" }} />
+            </>}
+            <rect x={x} y={y} width={bw} height={h} rx={tres_d ? 0 : 5} fill={`url(#gc${tres_d ? "3" : "2"}${i})`} />
+            {d.value > 0 && <text x={x + bw / 2} y={y - dep - 4} textAnchor="middle" className="fill-slate-700" style={{ fontSize: 10, fontWeight: 700 }}>{d.value}</text>}
+            <text x={x + bw / 2} y={H - 8} textAnchor="middle" className="fill-slate-500" style={{ fontSize: 9.5 }}>{d.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function BarrasH({ data }) {
+  const max = Math.max(...data.map((d) => d.value), 1);
+  return (
+    <div className="space-y-1.5">
+      {data.map((d, i) => {
+        const c = PALETA[i % PALETA.length];
+        return (
+          <div key={d.label} className="flex items-center gap-2" title={`${d.label}: ${d.value}`}>
+            <span className="text-[11px] text-slate-600 w-36 truncate">{d.label}</span>
+            <div className="flex-1 bg-slate-100 rounded-full h-3.5 overflow-hidden">
+              <div className="h-3.5 rounded-full" style={{ width: `${(d.value / max) * 100}%`, background: `linear-gradient(90deg, ${c}, ${c}aa)` }} />
+            </div>
+            <span className="text-[11px] font-bold text-slate-700 w-7 text-right">{d.value}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Radar({ data }) {
+  const n = data.length;
+  if (n < 3) return <SinDatos />;
+  const max = Math.max(...data.map((d) => d.value), 1), R = 78, cx = 130, cy = 100;
+  const ang = (i) => -Math.PI / 2 + (i / n) * Math.PI * 2;
+  const pt = (i, f) => polar(cx, cy, R * f, ang(i));
+  const poly = (f) => data.map((_, i) => pt(i, f).join(",")).join(" ");
+  const datos = data.map((d, i) => pt(i, d.value / max).join(",")).join(" ");
+  return (
+    <svg viewBox="-25 0 310 205" className="w-full max-w-md mx-auto">
+      {[0.25, 0.5, 0.75, 1].map((f) => <polygon key={f} points={poly(f)} fill="none" stroke="#e2e8f0" />)}
+      {data.map((_, i) => <line key={i} x1={cx} y1={cy} x2={pt(i, 1)[0]} y2={pt(i, 1)[1]} stroke="#e2e8f0" />)}
+      <polygon points={datos} fill="#ec489944" stroke="#ec4899" strokeWidth="2" />
+      {data.map((d, i) => {
+        const [x, y] = pt(i, d.value / max), [lx, ly] = pt(i, 1.17);
+        return (
+          <g key={d.label}>
+            <circle cx={x} cy={y} r="3.5" fill="#ec4899"><title>{`${d.label}: ${d.value}`}</title></circle>
+            <text x={lx} y={ly} textAnchor={lx < cx - 4 ? "end" : lx > cx + 4 ? "start" : "middle"} dominantBaseline="middle" className="fill-slate-600" style={{ fontSize: 9 }}>{d.label} ({d.value})</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 function VistaGeneral({ registros }) {
   const anios = useMemo(() => [...new Set(registros.map((r) => r.anio).filter(Boolean))].sort((a, b) => b - a), [registros]);
-  const tipos = useMemo(() => [...new Set(registros.map((r) => r.tipoCategoria))].sort(), [registros]);
   const maquinas = useMemo(() => [...new Set(registros.map((r) => r.maquina).filter(Boolean))].sort((a, b) => Number(a) - Number(b) || 0), [registros]);
   const operarios = useMemo(() => [...new Set(registros.map((r) => r.operario).filter(Boolean))].sort(), [registros]);
 
-  const [anioSel, setAnioSel] = useState(null);
-  const [tipoSel, setTipoSel] = useState([]);
-  const [maquinaSel, setMaquinaSel] = useState(null);
-  const [operarioSel, setOperarioSel] = useState(null);
-  const [soloDevolucion, setSoloDevolucion] = useState(false);
+  const [anioSel, setAnioSel] = useState("");
+  const [tipoInf, setTipoInf] = useState(null);
+  const [clasSel, setClasSel] = useState(null);
+  const [devSel, setDevSel] = useState(null); // "con" | "sin"
+  const [catSel, setCatSel] = useState(null);
+  const [maquinaSel, setMaquinaSel] = useState("");
+  const [operarioSel, setOperarioSel] = useState("");
   const [busqueda, setBusqueda] = useState("");
 
-  function toggleTipo(t) {
-    setTipoSel((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
-  }
+  const cuenta = (arr, f) => arr.reduce((m, r) => { const k = f(r); m[k] = (m[k] || 0) + 1; return m; }, {});
 
-  const filtrados = useMemo(() => {
-    return registros.filter((r) => {
-      if (anioSel && r.anio !== anioSel) return false;
-      if (tipoSel.length > 0 && !tipoSel.includes(r.tipoCategoria)) return false;
-      if (maquinaSel && r.maquina !== maquinaSel) return false;
-      if (operarioSel && r.operario !== operarioSel) return false;
-      if (soloDevolucion && r.devolucion !== "SI") return false;
-      if (busqueda) {
-        const q = busqueda.toLowerCase();
-        const campo = `${r.numeroMostrado} ${r.producto} ${r.cliente} ${r.operario}`.toLowerCase();
-        if (!campo.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [registros, anioSel, tipoSel, maquinaSel, operarioSel, soloDevolucion, busqueda]);
+  // Filtros "generales" (año, máquina, operario, búsqueda)
+  const base = useMemo(() => registros.filter((r) => {
+    if (anioSel && r.anio !== Number(anioSel)) return false;
+    if (maquinaSel && r.maquina !== maquinaSel) return false;
+    if (operarioSel && r.operario !== operarioSel) return false;
+    if (busqueda) {
+      const campo = `${r.numeroMostrado} ${r.producto} ${r.cliente} ${r.operario}`.toLowerCase();
+      if (!campo.includes(busqueda.toLowerCase())) return false;
+    }
+    return true;
+  }), [registros, anioSel, maquinaSel, operarioSel, busqueda]);
 
-  const porTipo = useMemo(() => {
-    const counts = {};
-    filtrados.forEach((r) => { counts[r.tipoCategoria] = (counts[r.tipoCategoria] || 0) + 1; });
-    return Object.entries(counts).map(([label, value]) => ({ label, value, color: COLORES_TIPO[label] || "#334155" })).sort((a, b) => b.value - a.value);
-  }, [filtrados]);
+  // Cascada: tipo de informe → clasificación (→ devolución) → categoría
+  const nivel1 = base;
+  const nivel2 = useMemo(() => (tipoInf ? nivel1.filter((r) => r.tipoInforme === tipoInf) : nivel1), [nivel1, tipoInf]);
+  const nivel3 = useMemo(() => {
+    let a = nivel2;
+    if (clasSel) a = a.filter((r) => r.clasificacion === clasSel);
+    if (clasSel === "Reclamos de Clientes" && devSel) a = a.filter((r) => (devSel === "con") === r.conDevolucion);
+    return a;
+  }, [nivel2, clasSel, devSel]);
+  const filtrados = useMemo(() => (catSel ? nivel3.filter((r) => r.categoria === catSel) : nivel3), [nivel3, catSel]);
 
+  const cTipo = cuenta(nivel1, (r) => r.tipoInforme);
+  const cClas = cuenta(nivel2, (r) => r.clasificacion);
+  const reclamos = nivel2.filter((r) => r.clasificacion === "Reclamos de Clientes");
+  const cDev = { con: reclamos.filter((r) => r.conDevolucion).length, sin: reclamos.filter((r) => !r.conDevolucion).length };
+  const cCat = cuenta(nivel3, (r) => r.categoria);
+
+  function elegirTipo(t) { setTipoInf(tipoInf === t ? null : t); setClasSel(null); setDevSel(null); setCatSel(null); }
+  function elegirClas(c) { setClasSel(clasSel === c ? null : c); setDevSel(null); setCatSel(null); }
+  const mostrarClas = !tipoInf || tipoInf === "No conformidad";
+
+  const agrupar = (f, tope) => Object.entries(cuenta(filtrados, f)).filter(([k]) => k && k !== "undefined").map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, tope || 99);
+  const porClas = agrupar((r) => r.clasificacion || r.tipoInforme).map((d) => ({ ...d, color: d.label in BTN_CLAS ? BTN_CLAS[d.label][0] : (BTN_TIPO[d.label] || ["#64748b"])[0] }));
+  const porHist = agrupar((r) => r.tipoCategoria, 8);
   const porMes = useMemo(() => {
-    const counts = Array(12).fill(0);
-    filtrados.forEach((r) => { if (r.mes) counts[r.mes - 1] += 1; });
-    return counts.map((value, i) => ({ label: MESES[i], value }));
+    const c = Array(12).fill(0);
+    filtrados.forEach((r) => { if (r.mes) c[r.mes - 1] += 1; });
+    return c.map((value, i) => ({ label: MESES[i], value }));
   }, [filtrados]);
+  const porAnio = Object.entries(cuenta(filtrados, (r) => r.anio || "")).filter(([k]) => k).map(([label, value]) => ({ label, value })).sort((a, b) => Number(a.label) - Number(b.label)).slice(-8);
+  const porCliente = agrupar((r) => r.cliente, 8);
+  const porMaquina = agrupar((r) => (r.maquina ? `Máq. ${r.maquina}` : ""), 8);
+  const porCat = CATEGORIAS.map((label) => ({ label, value: filtrados.filter((r) => r.categoria === label).length }));
+  const radarDatos = porMaquina.length >= 3 ? porMaquina : porCat;
 
-  const porCliente = useMemo(() => {
-    const counts = {};
-    filtrados.forEach((r) => { if (r.cliente) counts[r.cliente] = (counts[r.cliente] || 0) + 1; });
-    return Object.entries(counts).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8);
-  }, [filtrados]);
-
-  const porMaquina = useMemo(() => {
-    const counts = {};
-    filtrados.forEach((r) => { if (r.maquina) counts[`Máq. ${r.maquina}`] = (counts[`Máq. ${r.maquina}`] || 0) + 1; });
-    return Object.entries(counts).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8);
-  }, [filtrados]);
-
-  const totalDevoluciones = filtrados.filter((r) => r.devolucion === "SI").length;
-  const pctDevolucion = filtrados.length ? Math.round((totalDevoluciones / filtrados.length) * 100) : 0;
-  const tipoMasFrecuente = porTipo[0]?.label || "—";
-  const hayFiltros = anioSel || tipoSel.length > 0 || maquinaSel || operarioSel || soloDevolucion || busqueda;
+  const nDefectos = filtrados.filter((r) => r.clasificacion === "Defectos x Control de Calidad").length;
+  const nReclamos = filtrados.filter((r) => r.clasificacion === "Reclamos de Clientes").length;
+  const nDevol = filtrados.filter((r) => r.conDevolucion).length;
+  const hayFiltros = anioSel || tipoInf || maquinaSel || operarioSel || busqueda;
+  const limpiar = () => { setAnioSel(""); setTipoInf(null); setClasSel(null); setDevSel(null); setCatSel(null); setMaquinaSel(""); setOperarioSel(""); setBusqueda(""); };
+  const selCls = "border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-300";
 
   return (
     <div>
-      <div className="bg-white rounded-lg border border-slate-200 p-4 mb-6 space-y-4">
-        <div>
-          <p className="text-xs font-medium text-slate-500 mb-2">Año</p>
-          <div className="flex flex-wrap gap-2">
-            <Chip label="Todos" active={!anioSel} onClick={() => setAnioSel(null)} />
-            {anios.map((a) => <Chip key={a} label={a} active={anioSel === a} onClick={() => setAnioSel(anioSel === a ? null : a)} />)}
-          </div>
-        </div>
-        <div>
-          <p className="text-xs font-medium text-slate-500 mb-2">Tipo de NC</p>
-          <div className="flex flex-wrap gap-2">
-            {tipos.map((t) => <Chip key={t} label={t} active={tipoSel.includes(t)} onClick={() => toggleTipo(t)} />)}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-end gap-4">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 mb-5 space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
           <div>
-            <p className="text-xs font-medium text-slate-500 mb-2">Máquina</p>
-            <select value={maquinaSel || ""} onChange={(e) => setMaquinaSel(e.target.value || null)} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">📅 Año</p>
+            <select value={anioSel} onChange={(e) => setAnioSel(e.target.value)} className={selCls}>
+              <option value="">Todos los años</option>
+              {anios.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">⚙️ Máquina</p>
+            <select value={maquinaSel} onChange={(e) => setMaquinaSel(e.target.value)} className={selCls}>
               <option value="">Todas</option>
               {maquinas.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
           <div>
-            <p className="text-xs font-medium text-slate-500 mb-2">Operario</p>
-            <select value={operarioSel || ""} onChange={(e) => setOperarioSel(e.target.value || null)} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm">
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">👷 Operario</p>
+            <select value={operarioSel} onChange={(e) => setOperarioSel(e.target.value)} className={selCls}>
               <option value="">Todos</option>
               {operarios.map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
           </div>
-          <label className="flex items-center gap-2 text-sm text-slate-600">
-            <input type="checkbox" checked={soloDevolucion} onChange={(e) => setSoloDevolucion(e.target.checked)} />
-            Solo con devolución
-          </label>
           <div className="flex-1 min-w-[160px]">
-            <input type="text" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar NC, producto, cliente..." className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm" />
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">🔎 Buscar</p>
+            <input type="text" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="NC, producto, cliente..." className={`w-full ${selCls}`} />
           </div>
-          {hayFiltros && (
-            <button type="button" onClick={() => { setAnioSel(null); setTipoSel([]); setMaquinaSel(null); setOperarioSel(null); setSoloDevolucion(false); setBusqueda(""); }} className="text-xs text-slate-500 underline">
-              Limpiar filtros
-            </button>
-          )}
-          <button
-            type="button"
+          {hayFiltros && <button type="button" onClick={limpiar} className="text-xs text-slate-500 underline pb-2">Limpiar filtros</button>}
+          <button type="button"
             onClick={() => exportarExcel(
               filtrados.map((r) => ({
-                "Nº NC": r.numeroMostrado, Fecha: fmtFecha(r.fecha), Tipo: r.tipoCategoria, Producto: r.producto,
-                Cliente: r.cliente, Máquina: r.maquina, Operario: r.operario, Devolución: r.devolucion, Estado: r.estado,
+                "Nº NC": r.numeroMostrado, Fecha: fmtFecha(r.fecha), "Tipo de informe": r.tipoInforme, Clasificación: r.clasificacion, Tipo: r.tipoCategoria,
+                Categoría: r.categoria, Producto: r.producto, Cliente: r.cliente, Máquina: r.maquina, Operario: r.operario, Devolución: r.devolucion, Estado: r.estado,
               })),
               "NC", `NC_Silver_${new Date().toISOString().slice(0, 10)}.xlsx`
             )}
-            className="ml-auto bg-slate-800 text-white text-xs font-medium rounded-md px-4 py-2 hover:bg-slate-700"
-          >
-            Exportar a Excel
+            className="ml-auto text-white text-xs font-bold rounded-lg px-4 py-2 shadow hover:opacity-90" style={{ background: "linear-gradient(135deg,#0ea5e9,#6366f1)" }}>
+            ⬇ Exportar a Excel
           </button>
         </div>
+
+        <div className="border-t border-slate-100 pt-3">
+          <p className="text-[11px] font-semibold text-slate-500 mb-1.5">1 · Tipo de informe</p>
+          <div className="flex flex-wrap gap-2">
+            <SegBtn label="Todos" count={nivel1.length} colors={["#334155", "#64748b"]} active={!tipoInf} onClick={() => elegirTipo(tipoInf)} />
+            {["No conformidad", "Hallazgo de auditoría", "Op. de mejora"].map((t) => (
+              <SegBtn key={t} label={t} count={cTipo[t] || 0} colors={BTN_TIPO[t]} active={tipoInf === t} onClick={() => elegirTipo(t)} />
+            ))}
+          </div>
+        </div>
+
+        {mostrarClas && (
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1.5">2 · Clasificación de la no conformidad</p>
+            <div className="flex flex-wrap gap-2 items-center">
+              {Object.keys(BTN_CLAS).map((c) => (
+                <SegBtn key={c} small label={c === "Defectos x Control de Calidad" ? "Defectos x control de calidad (interna)" : c === "Reclamos de Clientes" ? "Reclamos de cliente" : c}
+                  count={cClas[c] || 0} colors={BTN_CLAS[c]} active={clasSel === c} onClick={() => elegirClas(c)} />
+              ))}
+              {clasSel === "Reclamos de Clientes" && (
+                <>
+                  <span className="text-slate-300">›</span>
+                  <SegBtn small label="Con devolución" count={cDev.con} colors={["#f97316", "#fb923c"]} active={devSel === "con"} onClick={() => setDevSel(devSel === "con" ? null : "con")} />
+                  <SegBtn small label="Sin devolución" count={cDev.sin} colors={["#0ea5e9", "#38bdf8"]} active={devSel === "sin"} onClick={() => setDevSel(devSel === "sin" ? null : "sin")} />
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <p className="text-[11px] font-semibold text-slate-500 mb-1.5">{mostrarClas ? "3" : "2"} · Categoría</p>
+          <div className="flex flex-wrap gap-2">
+            {CATEGORIAS.map((c) => (
+              <SegBtn key={c} small label={c} count={cCat[c] || 0} colors={BTN_CAT[c]} active={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)} />
+            ))}
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <MetricCard label="NC en el filtro actual" value={filtrados.length} />
-        <MetricCard label="Con devolución" value={`${pctDevolucion}%`} sub={`${totalDevoluciones} casos`} />
-        <MetricCard label="Tipo más frecuente" value={tipoMasFrecuente} />
-        <MetricCard label="Años cubiertos" value={anioSel ? "1" : anios.length} />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <Kpi label="Registros en el filtro" value={filtrados.length} sub={anioSel ? `Año ${anioSel}` : `${anios.length} años`} colors={["#6366f1", "#3b82f6"]} />
+        <Kpi label="Fallas internas (def. x CC)" value={nDefectos} sub="afecta indicador Fallas internas" colors={["#0d9488", "#10b981"]} />
+        <Kpi label="Reclamos de cliente" value={nReclamos} sub={`${nDevol} con devolución`} colors={["#e11d48", "#f97316"]} />
+        <Kpi label="Con devolución" value={filtrados.length ? `${Math.round((nDevol / filtrados.length) * 100)}%` : "0%"} sub={`${nDevol} casos`} colors={["#a855f7", "#ec4899"]} />
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4 mb-6">
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <h3 className="text-sm font-semibold text-slate-800 mb-3">NC por mes {anioSel ? `— ${anioSel}` : "(todos los años)"}</h3>
-          <MonthlyTrend data={porMes} />
-        </div>
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <h3 className="text-sm font-semibold text-slate-800 mb-3">NC por tipo</h3>
-          <BarChart data={porTipo} />
-        </div>
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <h3 className="text-sm font-semibold text-slate-800 mb-3">Top clientes/proveedores</h3>
-          {porCliente.length > 0 ? <BarChart data={porCliente} /> : <p className="text-xs text-slate-400">Sin datos en este filtro</p>}
-        </div>
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <h3 className="text-sm font-semibold text-slate-800 mb-3">Top máquinas</h3>
-          {porMaquina.length > 0 ? <BarChart data={porMaquina} /> : <p className="text-xs text-slate-400">Sin datos en este filtro</p>}
-        </div>
+      <div className="grid md:grid-cols-2 gap-4 mb-5">
+        <Tarjeta titulo="🍩 Por clasificación" sub="Dona"><Torta donut data={porClas} /></Tarjeta>
+        <Tarjeta titulo="🥧 Por tipo (detalle histórico)" sub="Torta 3D"><Torta tres_d data={porHist} /></Tarjeta>
+        <Tarjeta titulo={`📊 Por mes ${anioSel ? "— " + anioSel : "(todos los años)"}`} sub="Columnas">{filtrados.length ? <Columnas data={porMes} /> : <SinDatos />}</Tarjeta>
+        <Tarjeta titulo="🧊 Evolución por año" sub="Columnas 3D">{porAnio.length ? <Columnas tres_d data={porAnio} /> : <SinDatos />}</Tarjeta>
+        <Tarjeta titulo="🏭 Top clientes / proveedores" sub="Barras">{porCliente.length ? <BarrasH data={porCliente} /> : <SinDatos />}</Tarjeta>
+        <Tarjeta titulo={porMaquina.length >= 3 ? "🕸️ Radar por máquina" : "🕸️ Radar por categoría"} sub="Radar">{filtrados.length ? <Radar data={radarDatos} /> : <SinDatos />}</Tarjeta>
       </div>
 
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800">Listado ({filtrados.length})</h3>
+          <h3 className="text-sm font-bold text-slate-800">Listado ({filtrados.length})</h3>
           <p className="text-xs text-slate-400">Mostrando hasta 50</p>
         </div>
         <div className="overflow-x-auto">
@@ -656,7 +883,8 @@ function VistaGeneral({ registros }) {
               <tr>
                 <th className="text-left px-3 py-2">NC</th>
                 <th className="text-left px-3 py-2">Fecha</th>
-                <th className="text-left px-3 py-2">Tipo</th>
+                <th className="text-left px-3 py-2">Clasificación</th>
+                <th className="text-left px-3 py-2">Categoría</th>
                 <th className="text-left px-3 py-2">Producto</th>
                 <th className="text-left px-3 py-2">Cliente/Prov.</th>
                 <th className="text-left px-3 py-2">Máq.</th>
@@ -665,28 +893,26 @@ function VistaGeneral({ registros }) {
               </tr>
             </thead>
             <tbody>
-              {filtrados.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 50).map((r) => (
-                <tr key={r.numero} className="border-t border-slate-100">
-                  <td className="px-3 py-1.5 font-medium text-slate-700">
-                    {r.documentoGeneradoEn ? (
-                      <EnlaceWord ncNumero={r.numero} etiqueta={r.numeroMostrado} />
-                    ) : (
-                      r.numeroMostrado
-                    )}
-                  </td>
-                  <td className="px-3 py-1.5 text-slate-500">{fmtFecha(r.fecha)}</td>
-                  <td className="px-3 py-1.5">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium" style={{ background: (COLORES_TIPO[r.tipoCategoria] || "#334155") + "22", color: COLORES_TIPO[r.tipoCategoria] || "#334155" }}>
-                      {r.tipoCategoria}
-                    </span>
-                  </td>
-                  <td className="px-3 py-1.5 text-slate-600 max-w-[200px] truncate" title={r.producto}>{r.producto}</td>
-                  <td className="px-3 py-1.5 text-slate-600">{r.cliente}</td>
-                  <td className="px-3 py-1.5 text-slate-600">{r.maquina}</td>
-                  <td className="px-3 py-1.5">{r.devolucion === "SI" ? "Sí" : ""}</td>
-                  <td className="px-3 py-1.5 text-slate-500">{r.estado}</td>
-                </tr>
-              ))}
+              {filtrados.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 50).map((r) => {
+                const col = (BTN_CLAS[r.clasificacion] || BTN_TIPO[r.tipoInforme] || ["#64748b"])[0];
+                return (
+                  <tr key={r.numero} className="border-t border-slate-100">
+                    <td className="px-3 py-1.5 font-medium text-slate-700">
+                      {r.documentoGeneradoEn ? <EnlaceWord ncNumero={r.numero} etiqueta={r.numeroMostrado} /> : r.numeroMostrado}
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-500">{fmtFecha(r.fecha)}</td>
+                    <td className="px-3 py-1.5">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold" style={{ background: col + "22", color: col }}>{r.clasificacion || r.tipoInforme}</span>
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-600">{r.categoria}</td>
+                    <td className="px-3 py-1.5 text-slate-600 max-w-[200px] truncate" title={r.producto}>{r.producto}</td>
+                    <td className="px-3 py-1.5 text-slate-600">{r.cliente}</td>
+                    <td className="px-3 py-1.5 text-slate-600">{r.maquina}</td>
+                    <td className="px-3 py-1.5">{r.devolucion === "SI" ? "Sí" : ""}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{r.estado}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

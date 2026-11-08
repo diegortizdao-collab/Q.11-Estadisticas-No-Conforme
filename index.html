@@ -364,6 +364,59 @@ const PERSONAS_SILVER = [
   "Martorelli Carlos", "Canaberro Mariano", "Pardo Maximiliano", "Ortiz Diego", "Ramirez Ignacio", "Ortigoza Ramon",
 ];
 
+// docx-preview no dibuja las formas VML del Word (membrete y cuadraditos): se redibujan sobre el visor,
+// tomando lo elegido de las líneas de texto que el propio Q.21 trae ("Tipo: … — Categoría: …", "Cumplido: …").
+async function decorarQ21(cont, blob) {
+  const norm = (v) => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const art = cont.querySelector("article");
+  if (!art) return;
+  const zip = await JSZip.loadAsync(blob);
+  const xml = await zip.file("word/document.xml").async("string");
+  const antes = (xml.split("<w:tbl>")[0].match(/<w:t[ >][^<]*|<w:t>[^<]*/g) || []).map((t) => t.replace(/^<w:t[^>]*>/, "")).join("");
+  const g = (re, def) => { const m = re.exec(antes); return m ? m[0].replace(/\s+/g, " ") : def; };
+  const mf = Object.keys(zip.files).find((n) => /^word\/media\/.+\.(png|jpe?g)$/i.test(n));
+  const logo = mf ? URL.createObjectURL(new Blob([await zip.file(mf).async("uint8array")])) : "";
+  art.querySelectorAll("svg").forEach((e) => e.remove()); // formas VML mal ubicadas por el visor
+  const ps = [...art.querySelectorAll("p")];
+  const txt = (p) => p.textContent.replace(/\s+/g, " ").trim();
+  let tipo = "", cat = "", cum = "", req = "";
+  ps.forEach((p) => {
+    const t = txt(p);
+    let m;
+    if ((m = /^Tipo:\s*(.+?)\s*—\s*Categor[ií]a:\s*(.*)$/.exec(t))) { tipo = norm(m[1]); cat = norm(m[2]); }
+    else if ((m = /Cumplido:\s*([^—]+?)\s*—/.exec(t)) && /^Fecha programada/i.test(t)) cum = norm(m[1]);
+    else if ((m = /^Requiere acci[oó]n correctiva \/ mejora:\s*(.*)$/.exec(t))) req = norm(m[1]);
+  });
+  const box = (on) => `<span style="display:inline-block;width:9px;height:9px;margin:0 4px;vertical-align:baseline;border:1px solid ${on ? "#174a96" : "#000"};border-radius:${on ? "50%" : "0"};background:${on ? "#1f6fd0" : "#fff"}"></span>`;
+  // membrete
+  const t0 = art.querySelector("table");
+  while (art.firstChild && art.firstChild !== t0 && !art.firstChild.contains(t0)) art.removeChild(art.firstChild);
+  const h = document.createElement("div");
+  h.style.cssText = "display:flex;border:1px solid #000;margin:6px 0 4px;font-family:'Times New Roman',serif";
+  h.innerHTML = `<div style="width:150px;border-right:1px solid #000;padding:6px;display:flex;align-items:center">${logo ? `<img src="${logo}" style="max-width:100%">` : "SILVER INDUSTRIAL"}</div>
+    <div style="flex:1;font:20px Arial,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center;border-right:1px solid #000;padding:6px">INFORME DE NO CONFORMIDAD Y OPORTUNIDADES DE MEJORA</div>
+    <div style="width:170px;font-size:14px"><div style="padding:4px 8px;border-bottom:1px solid #000">${g(/FECHA:\s*[\d\/]+/, "FECHA:")}</div><div style="padding:4px 8px;border-bottom:1px solid #000">${g(/REV:\s*\d+/, "REV:")}</div><div style="padding:4px 8px">${g(/COD:\s*Q\.21/, "COD: Q.21")}</div></div>`;
+  art.insertBefore(h, art.firstChild);
+  // tipo de informe y categoría
+  const TIPOS = [["No conformidad", "no conf"], ["Hallazgo de auditoría", "hallazgo"], ["Op. de mejora", "op"]];
+  const pt = [...art.querySelectorAll("p")].find((p) => /No conformidad\s+Hallazgo de auditor[ií]a\s+Op\. de mejora/.test(txt(p)));
+  if (pt) pt.innerHTML = TIPOS.map(([l, k]) => `${l}${box(tipo.startsWith(k))}`).join("&nbsp;&nbsp;&nbsp;");
+  ["producto", "proceso", "proveedor", "cliente", "otros"].forEach((k) => {
+    const p = [...art.querySelectorAll("p")].find((x) => norm(txt(x)) === k);
+    if (p) p.innerHTML = `${p.textContent.trim()}${box(cat === k)}`;
+  });
+  const sino = (reg, val) => {
+    const p = [...art.querySelectorAll("p")].find((x) => reg.test(txt(x)));
+    if (!p) return;
+    const t = p.textContent.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const cs = getComputedStyle(p.querySelector("span") || p);
+    p.style.whiteSpace = "pre-wrap"; p.style.fontSize = cs.fontSize; p.style.fontFamily = cs.fontFamily;
+    p.innerHTML = t.replace(/\bSI(\s+)NO\b/, (m, sp) => `SI${box(val === "si")}${sp.length > 1 ? sp.slice(1) : " "}NO${box(val === "no")}`);
+  };
+  sino(/CUMPLIDO:\s*SI\s+NO/, cum);
+  sino(/REQUIERE ACCI[OÓ]N CORRECTIVA.*SI\s+NO/, req);
+}
+
 // Previsualización del Word guardado en R2 (se dibuja en pantalla, sin descargar)
 function VisorWord({ ncNumero, titulo, onCerrar }) {
   const cont = React.useRef(null);
@@ -385,6 +438,7 @@ function VisorWord({ ncNumero, titulo, onCerrar }) {
         setBlob(b);
         if (!window.docx) throw new Error("No se pudo cargar el visor de Word");
         await window.docx.renderAsync(b, cont.current, null, { inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true });
+        try { await decorarQ21(cont.current, b); } catch (e) { console.warn("decorarQ21:", e.message); }
         if (vivo) setEstado("ok");
       } catch (e) {
         if (vivo) { setEstado("error"); setMsg(e.message); }

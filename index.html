@@ -112,6 +112,8 @@ function mapNC(row) {
     cliente: row.cliente || "",
     devolucion: row.con_devolucion ? "SI" : "NO",
     conDevolucion: row.con_devolucion === true,
+    fechaProgramada: row.fecha_programada ? String(row.fecha_programada).slice(0, 10) : "",
+    cumplido: row.cumplido || "",
     clasificacion: row.clasificacion || "",
     categoria: row.categoria || "Otros",
     tipoInforme: (row.clasificacion === "Hallazgos de Auditoría" || row.tipo === "Hallazgo de auditoría") ? "Hallazgo de auditoría" : (row.tipo || "No conformidad"),
@@ -704,6 +706,17 @@ function Radar({ data }) {
   );
 }
 
+// Semáforo de plazo según la fecha programada de la disposición (NC y hallazgos; las OM no llevan plazo de disposición)
+function semaforoPlazo(r) {
+  if (r.tipoInforme === "Op. de mejora") return { c: "", t: "" };
+  if (r.estado === "Cerrada") return { c: "⚪", t: "Cerrada" };
+  if (r.cumplido === "Sí") return { c: "🟢", t: "Cumplida" };
+  if (!r.fechaProgramada) return { c: "🟡", t: "Sin fecha programada" };
+  const hoy = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  if (r.fechaProgramada < hoy) return { c: "🔴", t: "Vencida" };
+  return Math.round((new Date(r.fechaProgramada) - new Date(hoy)) / 86400000) <= 3 ? { c: "🟡", t: "Por vencer" } : { c: "🟢", t: "En término" };
+}
+
 function VistaGeneral({ registros }) {
   const anios = useMemo(() => [...new Set(registros.map((r) => r.anio).filter(Boolean))].sort((a, b) => b - a), [registros]);
   const maquinas = useMemo(() => [...new Set(registros.map((r) => r.maquina).filter(Boolean))].sort((a, b) => Number(a) - Number(b) || 0), [registros]);
@@ -890,6 +903,7 @@ function VistaGeneral({ registros }) {
                 <th className="text-left px-3 py-2">Máq.</th>
                 <th className="text-left px-3 py-2">Devol.</th>
                 <th className="text-left px-3 py-2">Estado</th>
+                <th className="text-left px-3 py-2">Plazo</th>
               </tr>
             </thead>
             <tbody>
@@ -910,6 +924,7 @@ function VistaGeneral({ registros }) {
                     <td className="px-3 py-1.5 text-slate-600">{r.maquina}</td>
                     <td className="px-3 py-1.5">{r.devolucion === "SI" ? "Sí" : ""}</td>
                     <td className="px-3 py-1.5 text-slate-500">{r.estado}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">{(() => { const sp = semaforoPlazo(r); return sp.c ? `${sp.c} ${sp.t}` : ""; })()}</td>
                   </tr>
                 );
               })}

@@ -1061,7 +1061,7 @@ function VistaGeneral({ registros }) {
                     <td className="px-3 py-1.5 text-slate-600 max-w-[200px] truncate" title={r.producto}>{r.producto}</td>
                     <td className="px-3 py-1.5 text-slate-600">{r.cliente}</td>
                     <td className="px-3 py-1.5 text-slate-600">{r.maquina}</td>
-                    <td className="px-3 py-1.5">{r.devolucion === "SI" ? "Sí" : ""}</td>
+                    <td className="px-3 py-1.5">{r.devolucion === "SI" ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-700">Sí</span> : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500">No</span>}</td>
                     <td className="px-3 py-1.5 text-slate-500">{r.estado}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap">{(() => { const sp = semaforoPlazo(r); return sp.c ? `${sp.c} ${sp.t}` : ""; })()}</td>
                   </tr>

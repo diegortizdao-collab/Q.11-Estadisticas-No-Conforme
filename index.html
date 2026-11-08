@@ -423,17 +423,99 @@ async function decorarQ21(cont, blob) {
   sino(/REQUIERE ACCI[OÓ]N CORRECTIVA.*SI\s+NO/, req);
 }
 
-// Previsualización del Word guardado en R2 (se dibuja en pantalla, sin descargar)
+// ---- Edición del Word Q.21 desde el Q.11: subir el Word editado + insertar firmas digitales (solo Gestión de Calidad) ----
+const _nf = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+async function obtenerFirmaDe(apellido) {
+  const ap = _nf(apellido).replace(/z$/, "[zs]");
+  const lr = await fetch(`${API_BASE}/firmas`);
+  if (!lr.ok) throw new Error("No tenés acceso a las firmas (solo Gestión de Calidad) o falta el binding del bucket.");
+  const lista = await lr.json();
+  const re = new RegExp(ap);
+  const f = lista.find((x) => re.test(_nf(`${x.id} ${x.nombre}`)));
+  if (!f) throw new Error(`No hay una firma cargada para «${apellido}» (cargala en el portal, RRHH → Firmas escaneadas).`);
+  const r = await fetch(`${API_BASE}/firmas/${encodeURIComponent(f.id)}`);
+  if (!r.ok) throw new Error("No se pudo leer la firma.");
+  const b = new Uint8Array(await r.arrayBuffer());
+  const dv = new DataView(b.buffer);
+  return { bytes: b, w: dv.getUint32(16), h: dv.getUint32(20) };
+}
+function _anchorFirma(firma, rid, id, nombre, dx, dy) {
+  const alto = 330000;
+  let ancho = Math.round(alto * (firma.w / firma.h)), altoF = alto;
+  if (ancho > 1080000) { ancho = 1080000; altoF = Math.round(ancho * (firma.h / firma.w)); }
+  return `<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="25170${id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>${dx}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>${dy}</wp:posOffset></wp:positionV><wp:extent cx="${ancho}" cy="${altoF}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="${id}" name="${nombre}"/><wp:cNvGraphicFramePr/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${id}" name="${rid}.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${ancho}" cy="${altoF}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`;
+}
+async function _registrarImagen(zip, rid, firma) {
+  zip.file(`word/media/${rid}.png`, firma.bytes);
+  const rp = "word/_rels/document.xml.rels";
+  const rels = await zip.file(rp).async("string");
+  if (!rels.includes(`Id="${rid}"`)) zip.file(rp, rels.replace("</Relationships>", `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${rid}.png"/></Relationships>`));
+}
+// quita firmas ya insertadas (por nombre) para no duplicar al volver a firmar
+const _quitarFirma = (xml, nombre) => xml.replace(new RegExp(`<w:r><w:drawing><wp:anchor(?:(?!</w:r>)[\\s\\S])*?name="${nombre}"(?:(?!</w:r>)[\\s\\S])*?</w:r>`, "g"), "");
+// opts: {emisor: "Ortigoza"|"Canaberro"|"Ortiz"|"" (ninguna) | undefined (no tocar), calidad: {cumplimiento:bool, eficacia:bool} | undefined}
+async function firmarWordQ21(blob, opts) {
+  const zip = await JSZip.loadAsync(blob);
+  let xml = await zip.file("word/document.xml").async("string");
+  if (opts.emisor !== undefined) {
+    xml = _quitarFirma(xml, "Firma emisor");
+    if (opts.emisor) {
+      const firma = await obtenerFirmaDe(opts.emisor);
+      const paras = xml.split("</w:p>");
+      let ok = false;
+      for (let i = 0; i < paras.length - 1; i++) {
+        if (/FIRMA RESPONSABLE\s+ACLARACI/.test(paras[i + 1].replace(/<[^>]+>/g, ""))) {
+          paras[i] += _anchorFirma(firma, "rIdFirmaEmisor", 9102, "Firma emisor", 120000, -230000);
+          ok = true; break;
+        }
+      }
+      if (!ok) throw new Error("No encontré el renglón «FIRMA RESPONSABLE» del emisor en este Word.");
+      xml = paras.join("</w:p>");
+      await _registrarImagen(zip, "rIdFirmaEmisor", firma);
+    }
+  }
+  if (opts.calidad) {
+    xml = _quitarFirma(xml, "Firma Gestión de Calidad");
+    if (opts.calidad.cumplimiento || opts.calidad.eficacia) {
+      const firma = await obtenerFirmaDe("Ortiz");
+      const paras = xml.split("</w:p>");
+      let idx = 0, n = 0;
+      for (let i = 0; i < paras.length; i++) {
+        if (/FIRMA DE GESTI/.test(paras[i].replace(/<[^>]+>/g, ""))) {
+          const quiere = idx === 0 ? opts.calidad.cumplimiento : opts.calidad.eficacia;
+          idx++;
+          if (quiere) { paras[i] += _anchorFirma(firma, "rIdFirmaCalidad", 9101, "Firma Gestión de Calidad", idx === 1 ? 5350000 : 4050000, -190000); n++; }
+        }
+      }
+      if (!n) throw new Error("No encontré los renglones «FIRMA DE GESTIÓN DE CALIDAD» en este Word.");
+      xml = paras.join("</w:p>");
+      await _registrarImagen(zip, "rIdFirmaCalidad", firma);
+    }
+  }
+  zip.file("word/document.xml", xml);
+  return await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+}
+
+// Previsualización del Word guardado en R2 (se dibuja en pantalla, sin descargar) + edición/firma
 function VisorWord({ ncNumero, titulo, onCerrar }) {
   const cont = React.useRef(null);
   const [estado, setEstado] = useState("cargando");
   const [msg, setMsg] = useState("");
   const [blob, setBlob] = useState(null);
+  const [ver, setVer] = useState(0);
+  const [panel, setPanel] = useState(false);
+  const [emisor, setEmisor] = useState("__no__");
+  const [fCump, setFCump] = useState(true);
+  const [fEfic, setFEfic] = useState(true);
+  const [trabajando, setTrabajando] = useState(false);
+  const [aviso, setAviso] = useState(null);
+  const fileRef = React.useRef(null);
 
   useEffect(() => {
     let vivo = true;
     (async () => {
       try {
+        setEstado("cargando");
         const r = await fetch(`${API_BASE}/nc/${ncNumero}/documento`);
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
@@ -443,6 +525,7 @@ function VisorWord({ ncNumero, titulo, onCerrar }) {
         if (!vivo) return;
         setBlob(b);
         if (!window.docx) throw new Error("No se pudo cargar el visor de Word");
+        cont.current.innerHTML = "";
         await window.docx.renderAsync(b, cont.current, null, { inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true });
         try { await decorarQ21(cont.current, b); } catch (e) { console.warn("decorarQ21:", e.message); }
         if (vivo) setEstado("ok");
@@ -451,7 +534,7 @@ function VisorWord({ ncNumero, titulo, onCerrar }) {
       }
     })();
     return () => { vivo = false; };
-  }, [ncNumero]);
+  }, [ncNumero, ver]);
 
   function descargar() {
     if (!blob) return;
@@ -464,17 +547,73 @@ function VisorWord({ ncNumero, titulo, onCerrar }) {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
+  async function guardarBlob(b, motivo) {
+    const r = await fetch(`${API_BASE}/nc/${ncNumero}/documento?forzar=1&motivo=${encodeURIComponent(motivo)}`, {
+      method: "PUT", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }, body: b,
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+  }
+  async function subirEditado(file) {
+    if (!file) return;
+    setTrabajando(true); setAviso(null);
+    try {
+      if (!/\.docx$/i.test(file.name)) throw new Error("Subí un archivo .docx");
+      await guardarBlob(file, "Edición manual del Word por Gestión de Calidad");
+      setAviso({ ok: true, t: "Word reemplazado. Queda constancia en el historial." });
+      setVer((v) => v + 1);
+    } catch (e) { setAviso({ ok: false, t: e.message }); } finally { setTrabajando(false); if (fileRef.current) fileRef.current.value = ""; }
+  }
+  async function firmar() {
+    setTrabajando(true); setAviso(null);
+    try {
+      const opts = { emisor: emisor === "__no__" ? undefined : emisor };
+      opts.calidad = { cumplimiento: fCump, eficacia: fEfic };
+      const nb = await firmarWordQ21(blob, opts);
+      await guardarBlob(nb, "Firma digital insertada por Gestión de Calidad");
+      setAviso({ ok: true, t: "Firmas aplicadas y guardadas." });
+      setVer((v) => v + 1);
+    } catch (e) { setAviso({ ok: false, t: e.message }); } finally { setTrabajando(false); }
+  }
 
+  const bt = "px-3 py-1.5 rounded-md text-xs font-medium border border-slate-300 text-slate-700 disabled:opacity-40";
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3" onClick={onCerrar}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 flex-wrap gap-2">
           <p className="text-sm font-medium text-slate-800">Registro Q.21 — Nº {titulo}</p>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={descargar} disabled={!blob} className="px-3 py-1.5 rounded-md text-xs font-medium border border-slate-300 text-slate-700 disabled:opacity-40">Descargar .docx</button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button type="button" onClick={() => setPanel((p) => !p)} disabled={!blob} className={`${bt} ${panel ? "bg-indigo-50 border-indigo-300" : ""}`}>✍ Editar / firmar</button>
+            <button type="button" onClick={descargar} disabled={!blob} className={bt}>Descargar .docx</button>
             <button type="button" onClick={onCerrar} className="px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 text-white">Cerrar</button>
           </div>
         </div>
+        {panel && (
+          <div className="px-4 py-3 border-b border-indigo-200 bg-indigo-50/60 space-y-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-600">Para editar el texto: descargá el .docx, modificalo en Word y subilo acá (reemplaza el guardado; no pierde las firmas que le dejes).</span>
+              <button type="button" disabled={trabajando} onClick={() => fileRef.current && fileRef.current.click()} className={bt}>⬆ Subir Word editado</button>
+              <input ref={fileRef} type="file" accept=".docx" className="hidden" onChange={(e) => subirEditado(e.target.files[0])} />
+            </div>
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-xs text-slate-600 mb-1">Firma del emisor (FIRMA RESPONSABLE)</label>
+                <select value={emisor} onChange={(e) => setEmisor(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+                  <option value="__no__">No tocar</option><option value="">Quitar firma del emisor</option>
+                  <option value="Ortigoza">Ramón Ortigoza</option><option value="Canaberro">Mariano Canaberro</option><option value="Ortiz">Diego Ortiz</option>
+                </select>
+              </div>
+              <div className="text-xs text-slate-700 space-y-1">
+                <p className="font-medium">Firma de Gestión de Calidad (Diego Ortiz) en:</p>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={fCump} onChange={(e) => setFCump(e.target.checked)} /> Verificación de cumplimiento</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={fEfic} onChange={(e) => setFEfic(e.target.checked)} /> Verificación de eficacia</label>
+              </div>
+              <button type="button" disabled={trabajando || !blob} onClick={firmar} className="px-4 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white disabled:opacity-50">{trabajando ? "Aplicando…" : "Aplicar firmas y guardar"}</button>
+            </div>
+            <p className="text-[11px] text-slate-500">Estando en «Quitar firma del emisor» o sin tildes, se retira esa firma. Cada cambio queda en el historial de la NC (aun si el documento está congelado).</p>
+            {aviso && <p className={`text-sm ${aviso.ok ? "text-emerald-700" : "text-red-600"}`}>{aviso.t}</p>}
+          </div>
+        )}
         <div className="flex-1 overflow-auto bg-slate-100 p-3">
           {estado === "cargando" && <p className="text-sm text-slate-500">Cargando documento…</p>}
           {estado === "error" && <p className="text-sm text-red-600">No se pudo mostrar el documento: {msg}</p>}
